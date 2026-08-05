@@ -17,6 +17,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -186,19 +187,93 @@ def cmd_show(args):
     print(note_markdown(note, args.transcript), end="")
 
 
+def default_basename(note):
+    date = ((note.get("calendar_event") or {}).get("scheduled_start_time")
+            or note.get("created_at") or "")[:10]
+    slug = re.sub(r"[^a-z0-9]+", "-", (note.get("title") or "untitled").lower()).strip("-")[:60]
+    return f"{date}-{slug or 'untitled'}"
+
+
+def write_note(path, note, with_transcript):
+    with open(path, "w") as fh:
+        fh.write(okf_frontmatter(note, with_transcript))
+        fh.write(note_markdown(note, with_transcript))
+
+
 def cmd_export(args):
     note = fetch_note(args.note_id, args.transcript)
-    if args.output:
-        path = args.output
-    else:
-        date = ((note.get("calendar_event") or {}).get("scheduled_start_time")
-                or note.get("created_at") or "")[:10]
-        slug = re.sub(r"[^a-z0-9]+", "-", (note.get("title") or "untitled").lower()).strip("-")[:60]
-        path = f"{date}-{slug or 'untitled'}.md"
-    with open(path, "w") as fh:
-        fh.write(okf_frontmatter(note, args.transcript))
-        fh.write(note_markdown(note, args.transcript))
+    path = args.output or f"{default_basename(note)}.md"
+    write_note(path, note, args.transcript)
     print(f"exported: {os.path.abspath(path)}")
+
+
+def cmd_sync(args):
+    """Incrementally mirror notes into a directory. Never deletes local files."""
+    target = os.path.abspath(args.dir)
+    os.makedirs(target, exist_ok=True)
+    state_path = os.path.join(target, ".granola-sync.json")
+    state = {"last_sync": None, "notes": {}}
+    if os.path.exists(state_path):
+        try:
+            with open(state_path) as fh:
+                state = json.load(fh)
+        except (json.JSONDecodeError, OSError) as e:
+            sys.exit(f"error: cannot read sync state {state_path} ({e}). "
+                     "Fix or remove it; local files are never deleted.")
+
+    full = args.full or not state.get("last_sync")
+    params = {"folder_id": args.folder, "page_size": 30}
+    if not full:
+        params["updated_after"] = state["last_sync"]
+
+    listed, cursor = [], None
+    while True:
+        page = api_get("/notes", {**params, "cursor": cursor})
+        listed += page.get("notes", [])
+        cursor = page.get("cursor")
+        if not (page.get("hasMore") and cursor):
+            break
+        time.sleep(0.25)
+
+    new = updated = unchanged = 0
+    last_sync = state.get("last_sync") or ""
+    for summary in listed:
+        nid, upd = summary["id"], summary.get("updated_at") or ""
+        last_sync = max(last_sync, upd)
+        entry = state["notes"].get(nid)
+        if entry and entry.get("updated_at") == upd:
+            unchanged += 1
+            continue
+        note = fetch_note(nid, args.transcripts)
+        if entry:
+            fname = entry["file"]
+        else:
+            base = default_basename(note)
+            fname, i = f"{base}.md", 2
+            managed = {e["file"] for e in state["notes"].values()}
+            while fname in managed or os.path.exists(os.path.join(target, fname)):
+                fname, i = f"{base}-{i}.md", i + 1
+        write_note(os.path.join(target, fname), note, args.transcripts)
+        state["notes"][nid] = {"file": fname, "updated_at": upd, "title": summary.get("title")}
+        new, updated = new + (not entry), updated + bool(entry)
+        time.sleep(0.25)
+
+    gone = []
+    if full:
+        listed_ids = {n["id"] for n in listed}
+        gone = sorted((e["file"], nid) for nid, e in state["notes"].items() if nid not in listed_ids)
+
+    if last_sync:
+        state["last_sync"] = last_sync
+    tmp = state_path + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(state, fh, indent=1)
+    os.replace(tmp, state_path)
+
+    mode = "full" if full else "incremental"
+    print(f"synced {target} ({mode}): {new} new, {updated} updated, {unchanged} unchanged")
+    for fname, nid in gone:
+        print(f"  kept local file whose note is gone upstream: {fname} ({nid})")
 
 
 def main():
@@ -228,6 +303,14 @@ def main():
     pe.add_argument("--transcript", action="store_true", help="include the transcript")
     pe.add_argument("-o", "--output", help="output path (default: ./<date>-<title>.md)")
     pe.set_defaults(func=cmd_export)
+
+    py = sub.add_parser("sync", help="incrementally mirror notes into a directory (never deletes)")
+    py.add_argument("--dir", required=True, help="target directory for the mirrored notes")
+    py.add_argument("--transcripts", action="store_true", help="include transcripts in synced files")
+    py.add_argument("--folder", help="only sync notes in this folder (fol_…)")
+    py.add_argument("--full", action="store_true",
+                    help="re-check every note instead of only changes since last sync")
+    py.set_defaults(func=cmd_sync)
 
     args = p.parse_args()
     args.func(args)

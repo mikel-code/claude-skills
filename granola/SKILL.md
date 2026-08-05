@@ -29,6 +29,7 @@ granola.sh list [--limit N] [--all] [--after ISO] [--before ISO]
 granola.sh folders
 granola.sh show <not_ID> [--transcript]
 granola.sh export <not_ID> [--transcript] [-o PATH]
+granola.sh sync --dir PATH [--transcripts] [--folder fol_ID] [--full]
 ```
 
 - `list` prints one note per line: `not_ID  created-at  title — owner`. Default
@@ -44,6 +45,17 @@ granola.sh export <not_ID> [--transcript] [-o PATH]
   an [Open Knowledge Format (OKF) v0.2](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
   YAML frontmatter block (type/title/description/resource/tags/generated/sources
   plus a `meeting:` extension with attendees and organiser).
+
+- `sync` incrementally mirrors notes into `--dir` as OKF-frontmatter Markdown
+  files: first run (or `--full`) fetches everything; later runs fetch only
+  notes changed since the last sync (tracked in `<dir>/.granola-sync.json`,
+  which also pins each note id to its filename — don't edit or delete it).
+  **Sync never deletes local files**: notes removed upstream are reported as
+  "kept local file" (only detectable on `--full` runs) and left in place; it
+  also never overwrites files it doesn't manage. Use this from projects that
+  keep a meeting-notes mirror — point the project's CLAUDE.md at
+  `granola.sh sync --dir <notes-dir>` and treat the mirrored files as
+  read-only source material.
 
 Typical flows: "what meetings did I have this week" → `list --after <monday>`;
 "show me the notes from the X meeting" → `list` to find the id, then `show`;
