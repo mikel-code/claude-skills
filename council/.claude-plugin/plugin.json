@@ -1,0 +1,9 @@
+{
+  "name": "council",
+  "description": "Convene an LLM Council — five independent persona advisors deliberate in parallel, blind-review each other, and a chairman delivers a verdict with concrete next steps.",
+  "author": {
+    "name": "mikel-code"
+  },
+  "repository": "https://github.com/mikel-code/claude-skills",
+  "license": "MIT"
+}

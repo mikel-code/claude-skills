@@ -1,0 +1,9 @@
+{
+  "name": "wargame",
+  "description": "Wargame a subsystem's failure surfaces move-by-move (forks, counter-moves, abort conditions, red-team) so a cheaper model can execute or harden it blind.",
+  "author": {
+    "name": "mikel-code"
+  },
+  "repository": "https://github.com/mikel-code/claude-skills",
+  "license": "MIT"
+}

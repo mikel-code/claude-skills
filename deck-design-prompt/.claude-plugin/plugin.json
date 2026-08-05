@@ -1,0 +1,9 @@
+{
+  "name": "deck-design-prompt",
+  "description": "Turn a finished deck.md into a ready-to-paste Claude Design prompt that applies visual design without touching content.",
+  "author": {
+    "name": "mikel-code"
+  },
+  "repository": "https://github.com/mikel-code/claude-skills",
+  "license": "MIT"
+}

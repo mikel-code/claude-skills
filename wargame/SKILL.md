@@ -1,6 +1,6 @@
 ---
 name: wargame
-description: Wargame a subsystem — make a top-tier model fight its failure surfaces on paper move-by-move (expected observation, most-likely failure + counter-move, forks with triggers, abort conditions, verification, and a red-team that must actually land), so any cheaper model can execute or harden it blind. Use for "/wargame <target>", "wargame this subsystem / this pipeline / this flow", or to bank a capable model's judgment before losing access to it. Args: "<target>" — a path, subsystem name, or description; optional "--orders-only" to emit just the fill-in briefs.
+description: "Wargame a subsystem — make a top-tier model fight its failure surfaces on paper move-by-move (expected observation, most-likely failure + counter-move, forks with triggers, abort conditions, verification, and a red-team that must actually land), so any cheaper model can execute or harden it blind. Use for \"/wargame <target>\", \"wargame this subsystem / this pipeline / this flow\", or to bank a capable model's judgment before losing access to it. Args: \"<target>\" — a path, subsystem name, or description; optional \"--orders-only\" to emit just the fill-in briefs."
 ---
 
 # Wargame

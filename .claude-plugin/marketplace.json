@@ -1,0 +1,32 @@
+{
+  "name": "mikel-skills",
+  "owner": {
+    "name": "mikel-code",
+    "url": "https://github.com/mikel-code"
+  },
+  "metadata": {
+    "description": "Claude Code skills — LLM council deliberation, wargaming, and McKinsey-style deck content."
+  },
+  "plugins": [
+    {
+      "name": "council",
+      "source": "./council",
+      "description": "Convene an LLM Council — five independent persona advisors deliberate in parallel, blind-review each other, and a chairman delivers a verdict with concrete next steps."
+    },
+    {
+      "name": "wargame",
+      "source": "./wargame",
+      "description": "Wargame a subsystem's failure surfaces move-by-move (forks, counter-moves, abort conditions, red-team) so a cheaper model can execute or harden it blind."
+    },
+    {
+      "name": "mckinsey-deck",
+      "source": "./mckinsey-deck",
+      "description": "Create slide-deck content in Markdown applying McKinsey criteria — Pyramid Principle, action titles, MECE, quantified so-whats with sources."
+    },
+    {
+      "name": "deck-design-prompt",
+      "source": "./deck-design-prompt",
+      "description": "Turn a finished deck.md into a ready-to-paste Claude Design prompt that applies visual design without touching content."
+    }
+  ]
+}

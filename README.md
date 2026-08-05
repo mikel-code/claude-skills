@@ -6,26 +6,43 @@ Each skill is a self-contained folder with a `SKILL.md` (metadata, triggers, and
 
 ## Installation
 
-Clone the repo and copy (or symlink) the skills you want into your user-level skills directory:
+### Plugin marketplace (recommended)
+
+From Claude Code, add the marketplace once, then install the skills you want:
+
+```
+/plugin marketplace add mikel-code/claude-skills
+
+/plugin install council@mikel-skills
+/plugin install wargame@mikel-skills
+/plugin install mckinsey-deck@mikel-skills
+/plugin install deck-design-prompt@mikel-skills
+```
+
+(Also works non-interactively: `claude plugin marketplace add mikel-code/claude-skills && claude plugin install council@mikel-skills`.)
+
+### skills CLI
+
+Using the [skills](https://github.com/vercel-labs/skills) CLI — install everything, or pick with `--skill`:
+
+```bash
+npx skills add mikel-code/claude-skills
+npx skills add mikel-code/claude-skills --skill wargame
+```
+
+### Manual
+
+Clone and copy (or symlink) skills into your user-level skills directory:
 
 ```bash
 git clone https://github.com/mikel-code/claude-skills.git
 cd claude-skills
-
-# Copy everything:
 for d in council deck-design-prompt mckinsey-deck wargame; do
-  cp -R "$d" ~/.claude/skills/
-done
-
-# …or symlink so `git pull` keeps them up to date:
-for d in council deck-design-prompt mckinsey-deck wargame; do
-  ln -s "$(pwd)/$d" ~/.claude/skills/
+  cp -R "$d" ~/.claude/skills/    # or: ln -s "$(pwd)/$d" ~/.claude/skills/
 done
 ```
 
-Restart Claude Code (or start a new session) and the skills appear in the available-skills list.
-
-> To install a skill for a single project instead, place it under `<project>/.claude/skills/`.
+Restart Claude Code (or start a new session) and the skills appear in the available-skills list. To install a skill for a single project instead, place it under `<project>/.claude/skills/`.
 
 ## Skills
 

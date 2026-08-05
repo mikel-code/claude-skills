@@ -1,0 +1,9 @@
+{
+  "name": "mckinsey-deck",
+  "description": "Create slide-deck content in Markdown applying McKinsey criteria — Pyramid Principle, action titles, MECE, quantified so-whats with sources.",
+  "author": {
+    "name": "mikel-code"
+  },
+  "repository": "https://github.com/mikel-code/claude-skills",
+  "license": "MIT"
+}
