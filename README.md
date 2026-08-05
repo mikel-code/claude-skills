@@ -51,7 +51,7 @@ skill-name/
 
 Notes:
 
-- **council** runs its deliberation through Claude Code's `Workflow` tool via `council.js` — the SKILL.md tells Claude to pass the absolute path of the installed skill directory, so both copy and symlink installs work.
+- **council** runs its deliberation through Claude Code's `Workflow` tool via `scripts/council.js` — the SKILL.md tells Claude to pass the absolute path of the installed skill directory, so both copy and symlink installs work.
 - **wargame** and **mckinsey-deck** keep their heavyweight methodology in `references/` so the main prompt stays lean.
 
 ## License

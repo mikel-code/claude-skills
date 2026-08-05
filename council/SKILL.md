@@ -17,7 +17,7 @@ Karpathy-style council deliberation, adapted to personas. Each advisor runs as a
 
    ```
    Workflow({
-     scriptPath: "<absolute path to this skill's directory>/council.js",
+     scriptPath: "<absolute path to this skill's directory>/scripts/council.js",
      args: { question: "<the question>", lite: <true|false>, cwd: "<cwd or omit>" }
    })
    ```
@@ -31,4 +31,4 @@ Karpathy-style council deliberation, adapted to personas. Each advisor runs as a
 
 ## Tuning
 
-Persona briefs, shared rules, and the chairman prompt all live in `council.js` — the `ADVISORS` array at the top is the editing surface.
+Persona briefs, shared rules, and the chairman prompt all live in `scripts/council.js` — the `ADVISORS` array at the top is the editing surface.
