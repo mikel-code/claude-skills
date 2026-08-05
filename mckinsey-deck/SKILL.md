@@ -1,6 +1,7 @@
 ---
 name: mckinsey-deck
 description: Create or iterate on slide-deck content in Markdown applying McKinsey criteria (Pyramid Principle, action titles, MECE, so-what, quantification with sources). User provides context files and a deck goal; skill proposes an outline, then produces one slide at a time with feedback loops. Output is a deck.md file — content only, no visual references.
+license: MIT
 ---
 
 # McKinsey Deck Builder

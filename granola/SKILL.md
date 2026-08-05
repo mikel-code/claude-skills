@@ -1,6 +1,8 @@
 ---
 name: granola
 description: "Access Granola meeting notes through the Granola API with a leak-resistant Proton Pass key (pass-cli Mode A). List meeting notes, show a note's summary, attendees, and optionally its transcript, and export notes to Markdown files. Use for /granola, \"list my granola meetings/notes\", \"show the notes/summary/transcript of that meeting\", or \"export that meeting to markdown\"."
+license: MIT
+compatibility: Requires the Proton Pass CLI (pass-cli), Python 3, and network access to public-api.granola.ai
 ---
 
 # Granola

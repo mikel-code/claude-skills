@@ -1,6 +1,7 @@
 ---
 name: deck-design-prompt
 description: Reads a completed deck.md (produced by mckinsey-deck) and outputs a ready-to-paste prompt for Claude Design that tells it how to apply visual design without touching any content.
+license: MIT
 ---
 
 # Deck-to-Design Prompt Generator

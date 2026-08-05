@@ -1,6 +1,8 @@
 ---
 name: council
 description: Convene an LLM Council — five independent persona advisors (contrarian, first-principles, expansionist, outsider, executor) deliberate on a question in parallel, blind-review each other, and a chairman delivers a verdict with concrete next steps. Use when the user runs /council <question>, says "convene the council" / "ask the council", or wants hard multi-perspective, anti-sycophancy advice on a decision.
+license: MIT
+compatibility: Requires an agent with the Workflow orchestration tool (Claude Code)
 ---
 
 # LLM Council
