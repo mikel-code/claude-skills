@@ -42,9 +42,11 @@ Restart Claude Code (or start a new session) and the skills appear in the availa
 
 ```
 skill-name/
-├── SKILL.md          # frontmatter (name, description/triggers) + instructions
-├── *.js              # workflow scripts, if the skill orchestrates subagents
-└── references/       # detailed method docs loaded on demand
+├── SKILL.md          # Metadata, triggers, usage
+├── CHANGELOG.md      # Version history
+├── scripts/          # Executable orchestration
+├── assets/           # Resources
+└── references/       # Detailed docs
 ```
 
 Notes:
