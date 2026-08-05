@@ -27,6 +27,11 @@
       "name": "deck-design-prompt",
       "source": "./deck-design-prompt",
       "description": "Turn a finished deck.md into a ready-to-paste Claude Design prompt that applies visual design without touching content."
+    },
+    {
+      "name": "granola",
+      "source": "./granola",
+      "description": "Access Granola meeting notes through the Granola API with a leak-resistant Proton Pass key — list notes, show summaries/attendees/transcripts, export to Markdown."
     }
   ]
 }

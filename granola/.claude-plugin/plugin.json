@@ -1,0 +1,9 @@
+{
+  "name": "granola",
+  "description": "Access Granola meeting notes through the Granola API with a leak-resistant Proton Pass key — list notes, show summaries/attendees/transcripts, export to Markdown.",
+  "author": {
+    "name": "mikel-code"
+  },
+  "repository": "https://github.com/mikel-code/claude-skills",
+  "license": "MIT"
+}

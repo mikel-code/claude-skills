@@ -52,6 +52,7 @@ Restart Claude Code (or start a new session) and the skills appear in the availa
 | [wargame](wargame/) | Wargame a subsystem — fight its failure surfaces on paper move-by-move (expected observation, most-likely failure + counter-move, forks with triggers, abort conditions, verification, and a red-team that must actually land) so a cheaper model or a future you can execute or harden it blind. `/wargame <target>`, optional `--orders-only`. |
 | [mckinsey-deck](mckinsey-deck/) | Create or iterate on slide-deck **content** in Markdown applying McKinsey criteria: Pyramid Principle, action titles, MECE, so-what, quantification with sources. Proposes an outline, then produces one slide at a time with feedback loops. Output is a `deck.md` — content only, no visual references. |
 | [deck-design-prompt](deck-design-prompt/) | Reads a finished `deck.md` (from mckinsey-deck) and outputs a ready-to-paste prompt for Claude Design that applies visual design without touching any content. |
+| [granola](granola/) | Access [Granola](https://granola.ai) meeting notes through the Granola API — list notes, show a note's summary/attendees/transcript, export to Markdown. The API key lives in Proton Pass and is injected per-invocation via `pass-cli run` (Mode A), so it never enters the agent's context. Requires one-time setup (see the skill's SKILL.md). |
 
 `mckinsey-deck` → `deck-design-prompt` form a pipeline: build the content first, then hand it to design.
 
