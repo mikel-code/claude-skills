@@ -115,6 +115,44 @@ def render_transcript(segments):
     return "\n".join(lines).strip()
 
 
+def yaml_str(value):
+    return json.dumps(value, ensure_ascii=False)
+
+
+def okf_frontmatter(note, with_transcript):
+    """Open Knowledge Format (OKF) v0.2 frontmatter for an exported note."""
+    ev = note.get("calendar_event") or {}
+    summary = (note.get("summary_text") or "").strip()
+    description = ""
+    for line in summary.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        description = line.lstrip("-* ").strip()[:200]
+        break
+    tags = ["meeting", "granola"] + [f.get("name") for f in note.get("folder_membership") or [] if f.get("name")]
+    fm = ["---", "type: Meeting Note", f"title: {yaml_str(note.get('title') or '(untitled)')}"]
+    if description:
+        fm.append(f"description: {yaml_str(description)}")
+    if note.get("web_url"):
+        fm.append(f"resource: {note['web_url']}")
+    fm.append(f"tags: [{', '.join(yaml_str(t) for t in tags)}]")
+    if note.get("updated_at"):
+        fm.append(f"generated: {{ by: \"machine:granola\", at: {note['updated_at']} }}")
+    fm += ["sources:", f"  - resource: {BASE_URL}/notes/{note.get('id')}", "status: stable", "meeting:"]
+    date = ev.get("scheduled_start_time") or note.get("created_at")
+    if date:
+        fm.append(f"  scheduled_at: {date}")
+    if ev.get("organiser"):
+        fm.append(f"  organiser: {ev['organiser']}")
+    attendees = note.get("attendees") or []
+    if attendees:
+        fm.append("  attendees:")
+        fm += [f"    - {yaml_str(fmt_user(a))}" for a in attendees]
+    fm += [f"  transcript_included: {'true' if with_transcript else 'false'}", "---", ""]
+    return "\n".join(fm)
+
+
 def note_markdown(note, with_transcript):
     title = note.get("title") or "(untitled)"
     ev = note.get("calendar_event") or {}
@@ -158,6 +196,7 @@ def cmd_export(args):
         slug = re.sub(r"[^a-z0-9]+", "-", (note.get("title") or "untitled").lower()).strip("-")[:60]
         path = f"{date}-{slug or 'untitled'}.md"
     with open(path, "w") as fh:
+        fh.write(okf_frontmatter(note, args.transcript))
         fh.write(note_markdown(note, args.transcript))
     print(f"exported: {os.path.abspath(path)}")
 

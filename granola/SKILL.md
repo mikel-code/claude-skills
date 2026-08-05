@@ -40,7 +40,10 @@ granola.sh export <not_ID> [--transcript] [-o PATH]
   the transcript when the user asks for it — transcripts are large.
 - `export` writes that same Markdown to a file (default
   `./<date>-<title-slug>.md` in the current directory) and prints the absolute
-  path. Use `-o` when the user names a destination.
+  path. Use `-o` when the user names a destination. Exported files start with
+  an [Open Knowledge Format (OKF) v0.2](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
+  YAML frontmatter block (type/title/description/resource/tags/generated/sources
+  plus a `meeting:` extension with attendees and organiser).
 
 Typical flows: "what meetings did I have this week" → `list --after <monday>`;
 "show me the notes from the X meeting" → `list` to find the id, then `show`;
