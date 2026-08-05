@@ -122,7 +122,7 @@ def yaml_str(value):
 def okf_frontmatter(note, with_transcript):
     """Open Knowledge Format (OKF) v0.2 frontmatter for an exported note."""
     ev = note.get("calendar_event") or {}
-    summary = (note.get("summary_text") or "").strip()
+    summary = (note.get("summary_markdown") or note.get("summary_text") or "").strip()
     description = ""
     for line in summary.splitlines():
         line = line.strip()
