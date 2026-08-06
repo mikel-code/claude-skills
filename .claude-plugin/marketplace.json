@@ -32,6 +32,11 @@
       "name": "granola",
       "source": "./granola",
       "description": "Access Granola meeting notes through the Granola API with a leak-resistant Proton Pass key — list notes, show summaries/attendees/transcripts, export to Markdown."
+    },
+    {
+      "name": "yt-transcript",
+      "source": "./yt-transcript",
+      "description": "Transcribe a video URL to OKF-frontmatter markdown — subtitles-only download when captions exist, local mlx-whisper with validation and a repair ladder when they don't."
     }
   ]
 }

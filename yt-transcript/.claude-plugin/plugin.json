@@ -1,0 +1,9 @@
+{
+  "name": "yt-transcript",
+  "description": "Transcribe a video URL to OKF-frontmatter markdown — subtitles-only download when captions exist, local mlx-whisper with validation and a repair ladder when they don't.",
+  "author": {
+    "name": "mikel-code"
+  },
+  "repository": "https://github.com/mikel-code/claude-skills",
+  "license": "MIT"
+}
