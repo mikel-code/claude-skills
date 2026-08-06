@@ -6,7 +6,8 @@
 
 Strategy (network-frugal, deterministic):
   1. Probe metadata only (no download).
-  2. If captions exist, download ONLY the caption track (json3) — never the video.
+  2. If captions exist, download ONLY the caption track (json3 on YouTube,
+     WebVTT elsewhere) — never the video.
      Preference: manual subs in the requested/original language > any manual >
      auto captions original track > auto in requested language.
   3. If no usable captions, download bestaudio only (smallest download with full
@@ -32,6 +33,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -113,6 +115,57 @@ def pick_caption(meta: dict, prefer: str) -> tuple[str, str] | None:
     return None
 
 
+VTT_TS = re.compile(r"(?:(\d+):)?(\d{2}):(\d{2})\.(\d{3})")
+
+
+def _vtt_seconds(ts: str) -> float | None:
+    m = VTT_TS.fullmatch(ts.strip())
+    if not m:
+        return None
+    h, mnt, s, ms = m.groups()
+    return int(h or 0) * 3600 + int(mnt) * 60 + int(s) + int(ms) / 1000.0
+
+
+def parse_vtt(text: str) -> list[dict]:
+    """WebVTT -> segments. Line-based state machine: every '-->' line starts a
+    new cue, so it survives fragmented/HLS VTT (concatenated fragments without
+    blank lines between cues — TED serves this). Strips inline tags, skips
+    header/NOTE/STYLE blocks, dedupes the repeated lines of rolling captions."""
+    segments: list[dict] = []
+    recent: deque[str] = deque(maxlen=3)  # rolling captions + fragment overlap dedupe
+    start = end = None
+    cue_lines: list[str] = []
+
+    def flush() -> None:
+        nonlocal cue_lines
+        if start is not None and cue_lines:
+            segments.append({"start": start, "end": end,
+                             "text": re.sub(r"\s+", " ", " ".join(cue_lines))})
+        cue_lines = []
+
+    for raw in text.replace("\r", "").splitlines():
+        line = raw.strip()
+        if "-->" in line:
+            flush()
+            m = re.match(r"(\S+)\s+-->\s+(\S+)", line)
+            start = _vtt_seconds(m.group(1)) if m else None
+            end = _vtt_seconds(m.group(2)) if m else None
+            continue
+        if not line:
+            flush()
+            start = None  # blank line ends the cue; ids/NOTE/STYLE that follow are not text
+            continue
+        if start is None or line.startswith(("WEBVTT", "X-TIMESTAMP")):
+            continue
+        clean = re.sub(r"<[^>]+>", "", line).strip()
+        norm = re.sub(r"\s+", " ", clean).lower()
+        if clean and norm not in recent:
+            cue_lines.append(clean)
+            recent.append(norm)
+    flush()
+    return segments
+
+
 def parse_json3(data: dict) -> list[dict]:
     segments = []
     for event in data.get("events", []):
@@ -161,16 +214,20 @@ def download_captions(url: str, lang_key: str, kind: str, tmp: Path) -> list[dic
         "writesubtitles": kind == "manual",
         "writeautomaticsub": kind == "auto",
         "subtitleslangs": [lang_key],
-        "subtitlesformat": "json3",
+        # json3 on YouTube; WebVTT everywhere else
+        "subtitlesformat": "json3/vtt/best",
         "outtmpl": str(tmp / "captions.%(ext)s"),
-        "quiet": True, "no_warnings": True,
+        "quiet": True, "no_warnings": True, "noprogress": True,
     }
     with yt_dlp.YoutubeDL(opts) as ydl:
         ydl.download([url])
-    sub_file = next(tmp.glob("captions*.json3"), None)
+    sub_file = (next(tmp.glob("captions*.json3"), None)
+                or next(tmp.glob("captions*.vtt"), None))
     if not sub_file:
         return None
-    return parse_json3(json.loads(sub_file.read_text(encoding="utf-8")))
+    if sub_file.suffix == ".json3":
+        return parse_json3(json.loads(sub_file.read_text(encoding="utf-8")))
+    return parse_vtt(sub_file.read_text(encoding="utf-8"))
 
 
 def download_audio(url: str, tmp: Path) -> Path:
@@ -179,7 +236,7 @@ def download_audio(url: str, tmp: Path) -> Path:
         # fallbacks keep the download small on sites without audio-only formats.
         "format": "bestaudio/best[height<=360]/worst[height>=240]/best",
         "outtmpl": str(tmp / "media.%(ext)s"),
-        "quiet": True, "no_warnings": True,
+        "quiet": True, "no_warnings": True, "noprogress": True,
     }
     with yt_dlp.YoutubeDL(opts) as ydl:
         ydl.download([url])

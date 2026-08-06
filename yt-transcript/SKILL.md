@@ -13,8 +13,9 @@ do not hand-roll yt-dlp or whisper invocations.
 ## Strategy (network-frugal)
 
 1. **Probe first** — metadata only, no download.
-2. **Captions if available** — downloads only the subtitle track (json3), never
-   the video. Manual subs are preferred over auto captions; auto captions use
+2. **Captions if available** — downloads only the subtitle track (json3 on
+   YouTube, WebVTT on other sites), never the video. Manual subs are preferred
+   over auto captions; auto captions use
    the original ASR track, never a translated one (unless the user asked for a
    specific language with `--lang`).
 3. **Whisper fallback** — when no usable captions exist, downloads `bestaudio`
