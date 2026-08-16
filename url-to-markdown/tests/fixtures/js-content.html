@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Client-Rendered Notes — Small Batch</title>
+</head>
+<body>
+<div id="root">Loading…</div>
+<script>
+document.getElementById('root').innerHTML = '<article><h1>The Slow Roast Log</h1>' +
+  '<p>SENTINEL-4471-CHROME-RENDER: if you can read this sentence, the page ' +
+  'was rendered with JavaScript before extraction, because this paragraph ' +
+  'exists only inside a DOM mutation performed by an inline script tag.</p>' +
+  '<p>Batch 214 ran eighteen minutes longer than the roast log called for, ' +
+  'and the second crack came later than expected given the ambient humidity ' +
+  'that morning.</p></article>';
+</script>
+</body>
+</html>

@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dashboard — Meridian Analytics</title>
+<link rel="stylesheet" href="/static/css/main.9f2c1a.css">
+<script>
+// Inline bootstrap payload — a preloaded state blob the bundle hydrates from,
+// standard for SPA shells so the client doesn't have to round-trip for
+// config before first paint. None of this is visible text; it's JS source.
+window.__MERIDIAN_BOOTSTRAP__ = {
+  "env": "production",
+  "region": "us-west-2",
+  "featureFlags": {
+    "newSidebar": true, "betaCharts": false, "darkModeDefault": true,
+    "exportV2": true, "realtimeSockets": true, "auditLogV3": false,
+    "orgSwitcherV2": true, "savedViews": true, "commandPalette": true,
+    "inlineComments": false, "bulkActions": true, "csvStreaming": true
+  },
+  "routes": [
+    "/dashboard", "/reports", "/reports/:id", "/settings", "/settings/team",
+    "/settings/billing", "/settings/integrations", "/alerts", "/alerts/:id",
+    "/exports", "/audit-log", "/onboarding", "/onboarding/step-1",
+    "/onboarding/step-2", "/onboarding/step-3", "/search", "/help"
+  ],
+  "chunkManifest": {
+    "main": "main.7c4e9b2a.js", "vendor": "vendor.1a2b3c4d.js",
+    "charts": "charts.9e8f7d6c.js", "settings": "settings.5b4a3928.js",
+    "reports": "reports.2d1c0b9a.js", "onboarding": "onboarding.8f7e6d5c.js"
+  },
+  "buildId": "20260601.4471",
+  "sentryDsn": "https://examplepublickey@o000000.ingest.sentry.io/0000000",
+  "apiBase": "https://api.meridian-analytics.example/v3",
+  "sessionRefreshIntervalMs": 240000,
+  "telemetrySampleRate": 0.15
+};
+(function bootstrapNoop() {
+  // Placeholder hydration helper kept inline to avoid an extra request
+  // before the vendor bundle loads. Real builds strip comments like this.
+  var pending = [];
+  function enqueue(fn) { pending.push(fn); }
+  function flush() { while (pending.length) { (pending.shift())(); } }
+  window.__meridianEnqueue = enqueue;
+  window.__meridianFlush = flush;
+})();
+</script>
+</head>
+<body>
+<div id="root"></div>
+<noscript>Please enable JavaScript to run Meridian Analytics.</noscript>
+<script src="/static/js/vendor.1a2b3c4d.js" defer></script>
+<script src="/static/js/main.7c4e9b2a.js" defer></script>
+</body>
+</html>

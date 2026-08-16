@@ -1,0 +1,9 @@
+{
+  "name": "url-to-markdown",
+  "description": "Scrape a URL into OKF-frontmatter markdown through a cheap-and-private-first tier ladder — local trafilatura, headless Chrome rendering, keyless Jina Reader, optional Firecrawl — with a sanity gate deciding escalation and full tier provenance in the output.",
+  "author": {
+    "name": "mikel-code"
+  },
+  "repository": "https://github.com/mikel-code/claude-skills",
+  "license": "MIT"
+}
