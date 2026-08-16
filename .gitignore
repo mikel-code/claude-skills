@@ -1,3 +1,4 @@
 .DS_Store
 __pycache__/
 granola/granola.env
+url-to-markdown/url-to-markdown.env
