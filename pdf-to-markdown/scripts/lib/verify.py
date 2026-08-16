@@ -71,6 +71,27 @@ the orchestrator's job to flag — silently inventing a 0.0 here would double-
 report it. Page numbers supplied must exist in the PDF (1-indexed, per the
 contract); out-of-range keys raise ValueError rather than silently scoring.
 
+Bigram / word-order detection (contract.py VerifyResult.bigram/order_flagged):
+unigram recall is a bag-of-words check — a page whose lines or table cells
+have their word order scrambled (docling word-reversal bug; shuffled TOC
+entries) can score 0.97+ on unigram recall while being unusable. The fix
+reuses the exact same normalized token sequences (ref: de-hyphenated +
+tokenized; md: markdown-stripped + tokenized) and additionally compares
+adjacent-token PAIRS with the same bounded-multiset recall math. Order is a
+*secondary* signal layered on top of, never instead of, unigram recall:
+a page must first pass the unigram bar (or it's already `flagged` for a
+content reason) before low bigram recall promotes it to `order_flagged`.
+ORDER_THRESHOLD = 0.75 (see the constant's own comment for the full writeup)
+was picked empirically against a real 423-page document: docling's
+word-reversed table-cell pages scored bigram 0.69/0.71, cleanly below every
+sampled good page (prose and ruled-table alike, floor 0.81); that document's
+TOC page-level reordering scored 0.81-0.92, overlapping the good range, so it
+is a documented residual false-negative rather than a threshold miss — no
+single global threshold catches both without flagging clean tables. Bigram is
+None exactly when unigram is None (nothing to cross-check either way); the
+vacuous case of a one-token reference page (no possible bigram) scores
+bigram 1.0, not None — it cannot be evidence of scrambling.
+
 Self-test: `uv run verify.py` (uses tests/fixtures/probe-*.pdf).
 """
 from __future__ import annotations
@@ -90,6 +111,41 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 MIN_TOKEN_LEN = 2      # drop 1-char tokens: bullet residue, stray letters
 MIN_REF_CHARS = 15     # non-ws chars below which a reference page is "empty"
 FALLBACK_MIN_LEN = 5   # joined-stream substring fallback needs length to be safe
+
+# Bigram recall below this (while unigram already passed `threshold`) marks a
+# page order_flagged rather than flagged. Chosen empirically against a real
+# 423-page document (CCBPBAbril2026.pdf) with docling as the extractor —
+# reconstructed via docling's actual per-page markdown export (do_ocr=False,
+# do_table_structure=True, same params as extract.py) cross-checked against
+# this module's own reference_pages(). Measured distributions:
+#
+#   pages 103/104 (docling word-reversed table-cell lines): bigram 0.69, 0.71
+#   pages 5-14    (TOC, page-level entry/fragment duplication+reorder):
+#                 bigram 0.81-0.92  <- OVERLAPS the good-page range below
+#   good prose + good ruled-table pages (30-35, 45-55, and 13 table pages
+#   spread across the document): bigram 0.81-0.97, floor set by a table page
+#
+# The severe word-reversal case (103/104) is cleanly separable from every
+# good page sampled (good floor 0.806 vs bad ceiling 0.712, a 0.094 gap).
+# The TOC-style corruption is NOT cleanly separable — its scores land inside
+# the good-page range because only a minority of lines on those pages are
+# actually disordered, so most adjacent-token pairs stay intact. Any
+# threshold high enough to catch the TOC pages would also flag multiple
+# known-good ruled-table pages (violates the "clean tables must not flag"
+# requirement) for the same reason: normal pipe-table linearization already
+# costs bigram recall (~0.81-0.97) independent of any bug. 0.75 sits in the
+# clean gap for the severe case, roughly equidistant from both edges
+# (+0.038 over the bad ceiling, -0.056 under the good floor) — biased
+# slightly toward not false-flagging clean tables since that failure mode is
+# the one explicitly ruled out.
+#
+# Residual risk: page-level/entry-level reordering that leaves most
+# individual lines internally intact (this document's TOC bug) is NOT
+# reliably caught by this metric at this threshold — 12/12 of the sampled
+# TOC pages score above 0.75 and stay order_flagged=False. Catching that
+# class would need a different signal (e.g. TOC-specific entry-number
+# monotonicity), out of scope here.
+ORDER_THRESHOLD = 0.75
 
 # Numbers first so "1.2" / "1,204" survive as one token instead of shattering
 # into single digits that the min-length rule would then drop.
@@ -136,6 +192,14 @@ def _pdftotext_pages(pdf_path: str) -> list[str]:
     return parts
 
 
+def reference_pages(pdf_path: str) -> dict[int, str]:
+    """Public per-page poppler `-layout` text, 1-indexed. Contract-exposed so
+    repair.py can reuse the same order-true reference this module scores
+    against, without a second pdftotext subprocess pass. Every page of the
+    PDF is present (even blank ones) — callers filter, this doesn't."""
+    return {i: text for i, text in enumerate(_pdftotext_pages(pdf_path), start=1)}
+
+
 # ------------------------------------------------------------ normalization
 
 def _strip_markdown(md: str) -> str:
@@ -161,14 +225,24 @@ def _tokens(text: str) -> list[str]:
     return [t for t in _TOKEN_RE.findall(text) if len(t) >= MIN_TOKEN_LEN]
 
 
-def _page_recall(ref_text: str, md_text: str) -> float | None:
-    """Fraction of reference tokens (with multiplicity) found in the markdown.
+def _bigrams(tokens: list[str]) -> list[tuple[str, str]]:
+    """Adjacent-token pairs, in sequence order — the word-order signal.
+    A single-token (or empty) sequence has none."""
+    return list(zip(tokens, tokens[1:]))
 
-    None when the reference page is effectively empty (< MIN_REF_CHARS
-    non-whitespace chars) — nothing to cross-check.
+
+def _page_recall(ref_text: str, md_text: str) -> tuple[float | None, float | None]:
+    """(unigram, bigram) recall of the reference against the markdown.
+
+    Both None when the reference page is effectively empty (< MIN_REF_CHARS
+    non-whitespace chars) — nothing to cross-check. Built from the *same*
+    normalized token sequences (dehyphenation, markdown-stripping,
+    tokenization all applied once, shared by both metrics) so the two scores
+    are directly comparable — a divergence between them is a word-order
+    signal, not a normalization artifact.
     """
     if len(re.sub(r"\s", "", ref_text)) < MIN_REF_CHARS:
-        return None
+        return None, None
 
     # De-hyphenate ONLY the reference: pdftotext keeps line-break hyphen
     # splits, pdf-inspector rejoins them. The markdown side has no line-break
@@ -176,7 +250,7 @@ def _page_recall(ref_text: str, md_text: str) -> float | None:
     # (it requires a word char immediately before the hyphen).
     ref_tokens = _tokens(_HYPHEN_BREAK_RE.sub("", ref_text))
     if not ref_tokens:
-        return None
+        return None, None
     md_tokens = _tokens(_strip_markdown(md_text))
 
     ref_counts = Counter(ref_tokens)
@@ -199,7 +273,25 @@ def _page_recall(ref_text: str, md_text: str) -> float | None:
         if residue and len(tok) >= FALLBACK_MIN_LEN and tok in md_concat:
             matched += residue
 
-    return matched / total
+    unigram = matched / total
+
+    # Bigram: identical multiset-recall math, one token pair at a time, on
+    # the SAME token sequences above (no fallback — segmentation drift is
+    # already absorbed on the unigram side; a fallback here would blur the
+    # exact signal this metric exists to catch, which is pair adjacency).
+    ref_bigrams = Counter(_bigrams(ref_tokens))
+    md_bigrams = Counter(_bigrams(md_tokens))
+    total_bg = sum(ref_bigrams.values())
+    if total_bg == 0:
+        # Single-token reference page: no possible pair, so no possible
+        # evidence of scrambling. Vacuously 1.0, not None (unigram is
+        # defined here, and contract ties bigram-None to unigram-None only).
+        bigram = 1.0
+    else:
+        matched_bg = sum(min(n, md_bigrams[bg]) for bg, n in ref_bigrams.items())
+        bigram = matched_bg / total_bg
+
+    return unigram, bigram
 
 
 # ------------------------------------------------------------------- verify
@@ -223,11 +315,43 @@ def verify(pdf_path: str, pages: dict[int, str],
         )
 
     recall: dict[int, float | None] = {}
+    bigram: dict[int, float | None] = {}
     for page in sorted(pages):
-        recall[page] = _page_recall(ref_pages[page - 1], pages[page])
+        recall[page], bigram[page] = _page_recall(ref_pages[page - 1], pages[page])
 
-    flagged = [p for p, r in recall.items() if r is not None and r < threshold]
-    return VerifyResult(recall=recall, flagged=flagged, threshold=threshold)
+    # Spillover tolerance: whole-construct serialization (extract.py's
+    # docling path) attributes a cross-page paragraph/list entirely to the
+    # page where it starts, so the NEXT page's poppler reference contains
+    # text whose markdown legitimately lives on a neighbor. Empirically (423-
+    # page real document): pages failing the plain per-page check had 97-100%
+    # of their "missing" tokens sitting in an adjacent page's markdown. So a
+    # failing page gets one retry against its own + both neighbors' markdown;
+    # passing the widened check means nothing is lost — only attributed
+    # differently — and the page is not flagged. The recorded recall stays
+    # the honest per-page number.
+    flagged = []
+    for p, r in recall.items():
+        if r is None or r >= threshold:
+            continue
+        neighborhood = "\n\n".join(
+            pages.get(q, "") for q in (p - 1, p, p + 1))
+        spill_recall, _ = _page_recall(ref_pages[p - 1], neighborhood)
+        if spill_recall is None or spill_recall < threshold:
+            flagged.append(p)
+    # Order flagging is layered on top of, not instead of, unigram recall: a
+    # page must already be passing (unigram >= threshold, so not in `flagged`)
+    # before a low bigram score promotes it. This is deliberate — a page with
+    # genuinely missing content is already `flagged` for that reason, and
+    # piling WORD_ORDER onto it would be redundant/misleading, not additive.
+    order_flagged = [
+        p for p in sorted(pages)
+        if recall[p] is not None and recall[p] >= threshold
+        and bigram[p] is not None and bigram[p] < ORDER_THRESHOLD
+    ]
+    return VerifyResult(
+        recall=recall, flagged=flagged, threshold=threshold,
+        bigram=bigram, order_flagged=order_flagged,
+    )
 
 
 # ---------------------------------------------------------------- self-test
@@ -302,6 +426,47 @@ if __name__ == "__main__":
         check("raises ValueError", False, "no exception")
     except ValueError as e:
         check("raises ValueError", True, str(e))
+
+    # 6. reference_pages(): public per-page poppler text, matches internal.
+    print("case 6: reference_pages() public accessor")
+    rp = reference_pages(simple)
+    check("keys are 1-indexed page numbers", set(rp) == {1, 2}, f"keys={sorted(rp)}")
+    check("page 1 text matches internal extraction", rp[1] == ref[0], "mismatch")
+    check("page 2 text matches internal extraction", rp[2] == ref[1], "mismatch")
+
+    # 7. Synthetic word-order case: reverse word order of half of page 1's
+    # lines. Same multiset of words (unigram stays high) but local adjacency
+    # is broken on the reversed lines (bigram drops) -> order_flagged, not
+    # flagged (content isn't missing, just scrambled).
+    print("case 7: synthetic word-order scramble (half the lines reversed)")
+    lines = ref[0].splitlines()
+    scrambled_lines = [
+        " ".join(reversed(line.split())) if i % 2 == 0 and line.split() else line
+        for i, line in enumerate(lines)
+    ]
+    scrambled = "\n".join(scrambled_lines)
+    assert scrambled != ref[0], "line reversal did not change page 1 text — fixture drift?"
+    r = verify(simple, {1: scrambled, 2: ref[1]})
+    check("page 1 unigram recall stays high", r.recall[1] is not None and r.recall[1] >= 0.85,
+          f"recall={r.recall[1]}")
+    check("page 1 bigram recall drops below unigram",
+          r.bigram[1] is not None and r.recall[1] is not None and r.bigram[1] < r.recall[1] - 0.15,
+          f"unigram={r.recall[1]} bigram={r.bigram[1]}")
+    check("page 1 not in flagged (content isn't missing)", 1 not in r.flagged,
+          f"flagged={r.flagged}")
+    check("page 1 in order_flagged", 1 in r.order_flagged,
+          f"bigram={r.bigram[1]} order_flagged={r.order_flagged}")
+    check("page 2 not order_flagged", 2 not in r.order_flagged,
+          f"order_flagged={r.order_flagged}")
+
+    # 8. Formatting-heavy case (case 3's fixtures) must NOT order-flag: same
+    # content, same word order, just markdown syntax added around it.
+    print("case 8: heavily formatted markdown does not order-flag")
+    r = verify(simple, {1: fancy1, 2: fancy2})
+    check("page 1 not order_flagged", 1 not in r.order_flagged,
+          f"bigram={r.bigram[1]} order_flagged={r.order_flagged}")
+    check("page 2 not order_flagged", 2 not in r.order_flagged,
+          f"bigram={r.bigram[2]} order_flagged={r.order_flagged}")
 
     if failures:
         print(f"\n{failures} self-test check(s) FAILED")

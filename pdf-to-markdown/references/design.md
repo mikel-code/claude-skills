@@ -242,6 +242,43 @@ set by hardware and by the vision tier's existence, not by licensing.
 - **Tesseract langs**: English-only by default; `brew install tesseract-lang`,
   select with `ocrmypdf -l eng+spa`.
 
+## Field hardening (real-document case study, 2026-08-16)
+
+A 423-page Spanish banking compendium (docling route, mixed decorative
+pages) surfaced failure modes the fixture corpus missed; each drove a
+permanent change:
+
+- **Cross-page structure loss** (lists losing indentation at page breaks,
+  furniture interleaving): caused by per-page `export_to_markdown(page_no)`
+  resetting serializer context. Fix: one whole-document serialization split
+  on docling's page-break placeholder — continuity preserved, page
+  accounting kept.
+- **Word-reversed table cells** (docling emitted the first line of cells
+  reversed: "cuenta la de Mantenimiento"): invisible to unigram recall
+  (0.97). Two-part fix: (1) `repair.fix_word_reversal` deterministically
+  restores order using the poppler reference (order-true) as ground truth —
+  the two engines now repair each other, not just disagree; (2) the
+  verifier gained a **bigram recall** metric — high unigram + low bigram =
+  order corruption → `word_order` flag → vision. This also catches
+  scrambled dot-leader TOC columns, which are not clean reversals and
+  can't be auto-repaired.
+- **OCR debris on decorative pages** (tesseract hallucinating letters in a
+  full-page photo under `--redo-ocr`, then verifying tautologically at
+  recall 1.0): `repair.clean_ocr_debris` strips fragment noise from OCR'd
+  pages; heavy-debris pages flag `ocr_debris` → vision.
+- **Control-character tofu** (160 × U+0007 for symbol-font bullets):
+  `repair.sanitize` strips C0/PUA glyphs from every page.
+- **Unciteable output**: every page now starts with an invisible
+  `<!-- p.N -->` anchor.
+- **Lost figures** (543 empty `<!-- image -->` placeholders, including
+  data diagrams): opt-in `--images` exports docling picture crops to
+  `<out>.assets/` with a size filter that drops margin icons.
+
+Known-not-fixed (documented): superscript footnote markers flatten to
+plain digits; margin badge icons can leak short glyph runs ("CF") into
+adjacent paragraphs; the docling cell-reversal bug itself is upstream
+(worth reporting to docling with the reproducing document).
+
 ## Future work (the reason this file exists)
 
 - **Granite-Docling-258M MLX** (`ibm-granite/granite-docling-258M-mlx`): IBM's

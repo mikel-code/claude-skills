@@ -21,7 +21,16 @@ uv run <skill-dir>/scripts/pdf_to_markdown.py <file.pdf> [-o out.md] [--output-d
 #   --no-vision      fully local: flagged pages stay unresolved, no vision step
 #   --verify         request a vision spot-check of unflagged pages too
 #   -l eng+spa       OCR languages (tesseract codes)
+#   --images         export figure images to <out>.assets/ and reference
+#                    them (docling route; icons filtered by size)
 ```
+
+The markdown carries an invisible `<!-- p.N -->` anchor at every page
+boundary — use it to locate a page when reviewing or citing. Deterministic
+repair passes run before verification and are recorded per page in the
+report's `tier_history` (`repair:reversal(n)` — word-order fixed against
+the poppler reference; `repair:debris(n)` — OCR noise lines removed from
+photo pages).
 
 Outputs `<stem>.md` (OKF v0.2 frontmatter + content) and
 `<stem>.report.json` (per-page status: every page is accounted for — nothing
@@ -93,4 +102,10 @@ flags the page rather than trusting either engine.
   conservative by design; Read the page, confirm visually, and if the
   markdown is actually complete just note it in the report (status stays
   auditable either way).
+- **`word_order` reason** → tokens are all present but their order is
+  corrupted beyond automatic repair (scrambled TOC columns, shuffled table
+  cells). Vision-transcribe the page; pay attention to reading order.
+- **`ocr_debris` reason** → an OCR pass over a decorative/photo page left
+  mostly noise; transcribe visually what real text the page carries (often
+  just a chapter title).
 - **Encrypted PDF** → not supported; ask the user for a decrypted copy.

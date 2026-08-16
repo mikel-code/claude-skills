@@ -43,15 +43,17 @@ from deps import check_deps  # noqa: E402
 from extract import extract  # noqa: E402
 from ocr import run_ocr  # noqa: E402
 from okf import okf_frontmatter  # noqa: E402
+from repair import clean_ocr_debris, fix_word_reversal, sanitize  # noqa: E402
 from report import assert_complete, build_report, render_report  # noqa: E402
 from triage import triage  # noqa: E402
-from verify import verify  # noqa: E402
+from verify import reference_pages, verify  # noqa: E402
 
 PLACEHOLDER = "<!-- page {page}: flagged ({reasons}) — awaiting vision transcription -->"
 
 
 def convert(pdf_path: Path, *, no_vision: bool, verify_requested: bool,
-            languages: str) -> tuple[str, dict, int]:
+            languages: str, images_dir: Path | None = None
+            ) -> tuple[str, dict, int]:
     """Returns (markdown_document, json_report, exit_code)."""
     try:
         tri = triage(str(pdf_path))
@@ -80,16 +82,36 @@ def convert(pdf_path: Path, *, no_vision: bool, verify_requested: bool,
             ocr_failed = True
 
     # Tier 1 on the working PDF, route decided by triage on the original.
-    ext = extract(str(working_pdf), tri.route)
+    ext = extract(str(working_pdf), tri.route,
+                  images_dir=str(images_dir) if images_dir else None)
+
+    # Deterministic repair passes (see lib/repair.py): junk-glyph
+    # sanitation, poppler-order-guided word-reversal repair, and OCR-debris
+    # filtering on OCR'd pages. All happen BEFORE verification so the
+    # recall/bigram metrics measure what actually ships.
+    pages_md = {p: sanitize(m) for p, m in ext.pages.items() if m}
+    reference = reference_pages(str(working_pdf))
+    pages_md, reversal_fixes = fix_word_reversal(pages_md, reference)
+    debris_removed: dict[int, int] = {}
+    for page in list(pages_md):
+        if page in ocr_pages:
+            cleaned, n = clean_ocr_debris(pages_md[page])
+            if n:
+                debris_removed[page] = n
+                pages_md[page] = cleaned
 
     # Assemble one record per page — the no-silent-loss invariant starts here.
     records: list[PageRecord] = []
     for page in range(1, tri.page_count + 1):
-        md = ext.pages.get(page)
+        md = pages_md.get(page)
         reasons = list(tri.ocr_pages.get(page, []))
         history = ["triage", f"extract:{tri.route.value}"]
         if page in ocr_pages and tri.ocr_mode is not None:
             history.insert(1, f"ocr:{tri.ocr_mode.value}")
+        if reversal_fixes.get(page):
+            history.append(f"repair:reversal({reversal_fixes[page]})")
+        if debris_removed.get(page):
+            history.append(f"repair:debris({debris_removed[page]})")
         if md and not (ocr_failed and page in ocr_pages):
             status = (PageStatus.OCR if page in ocr_pages
                       else PageStatus.EXTRACTED_DOCLING
@@ -116,6 +138,13 @@ def convert(pdf_path: Path, *, no_vision: bool, verify_requested: bool,
         if r.page in ver.flagged and r.status is not PageStatus.FLAGGED:
             r.status = PageStatus.FLAGGED
             r.reasons.append(Reason.LOW_RECALL)
+        elif (r.page in ver.order_flagged
+              and r.status is not PageStatus.FLAGGED):
+            # Tokens present but order corrupted beyond what the reversal
+            # repair could fix (scrambled TOCs, shuffled cells) — a class
+            # unigram recall is blind to.
+            r.status = PageStatus.FLAGGED
+            r.reasons.append(Reason.WORD_ORDER)
         elif (r.recall is None and r.markdown
               and len(r.markdown.strip()) > 100
               and r.status in (PageStatus.EXTRACTED,
@@ -151,16 +180,20 @@ def convert(pdf_path: Path, *, no_vision: bool, verify_requested: bool,
 
     body_parts = []
     for r in records:
+        # Every page starts with an invisible anchor: lets readers, diffs,
+        # and the vision workflow address pages without guessing offsets.
+        anchor = f"<!-- p.{r.page} -->"
         if r.markdown and r.status not in (PageStatus.FLAGGED,
                                            PageStatus.FLAGGED_UNRESOLVED):
-            body_parts.append(r.markdown.strip())
+            body_parts.append(anchor + "\n\n" + r.markdown.strip())
         else:
             # Flagged pages keep any partial markdown *after* the marker so
             # vision review sees what the extractor thought was there.
             marker = PLACEHOLDER.format(
                 page=r.page, reasons=", ".join(x.value for x in r.reasons))
-            body_parts.append(marker if not r.markdown
-                              else marker + "\n\n" + r.markdown.strip())
+            body_parts.append(anchor + "\n\n" + (
+                marker if not r.markdown
+                else marker + "\n\n" + r.markdown.strip()))
     # PDF /Title metadata is often a placeholder; okf falls back to the
     # filename stem on None.
     title = ext.title if ext.title and ext.title.lower() != "untitled" else None
@@ -267,6 +300,11 @@ def main() -> int:
                     help="print the machine-readable report to stdout")
     ap.add_argument("-l", "--languages", default="eng",
                     help="OCR languages, tesseract codes (e.g. eng+spa)")
+    ap.add_argument("--images", action="store_true",
+                    help="export figure images (docling route) into "
+                         "<out>.assets/ and reference them from the "
+                         "markdown instead of empty placeholders; small "
+                         "icons are filtered out")
     args = ap.parse_args()
 
     if args.reconcile is not None:
@@ -283,9 +321,14 @@ def main() -> int:
         out = out_dir / (args.pdf.stem + ".md")
     out.parent.mkdir(parents=True, exist_ok=True)
 
+    images_dir = None
+    if args.images:
+        images_dir = out.parent / (out.stem + ".assets")
+        images_dir.mkdir(parents=True, exist_ok=True)
     document, rep, code = convert(args.pdf, no_vision=args.no_vision,
                                   verify_requested=args.verify,
-                                  languages=args.languages)
+                                  languages=args.languages,
+                                  images_dir=images_dir)
     out.write_text(document, encoding="utf-8")
     rep["output"] = str(out.resolve())
     report_path = out.with_suffix(".report.json")

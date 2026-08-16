@@ -48,6 +48,11 @@ class Reason(str, Enum):
     GARBLED = "suspected_garbled_text"  # pdf-inspector: text quality layer
     ENCODING = "encoding_issues"       # doc-level has_encoding_issues
     LOW_RECALL = "low_recall"          # tier V: pdftotext disagreement
+    WORD_ORDER = "word_order"          # tier V: tokens present but order
+                                       # corrupted (high unigram, low bigram)
+                                       # and not auto-repairable
+    OCR_DEBRIS = "ocr_debris"          # OCR over image regions produced
+                                       # mostly fragment noise
     OCR_FAILED = "ocr_failed"          # tier 2 ran but page still unextractable
     EMPTY_OUTPUT = "empty_output"      # extractor returned no markdown for a
                                        # page that triage said has content
@@ -124,10 +129,18 @@ class VerifyResult:
     """verify.py output. recall[p] in [0,1] = fraction of pdftotext's
     normalized tokens for page p found in the markdown for page p.
     flagged = pages under threshold. Pages pdftotext finds empty are skipped
-    (recall None) — a scan has nothing to cross-check."""
+    (recall None) — a scan has nothing to cross-check.
+
+    bigram[p] = same recall computed over adjacent-token PAIRS: the
+    word-order signal. High unigram + low bigram = tokens present but
+    scrambled (reversed table cells, shuffled TOC lines) — a class token
+    recall is blind to by construction. order_flagged = pages whose unigram
+    recall passed but bigram recall fell below the order threshold."""
     recall: dict[int, float | None]             # 1-indexed
     flagged: list[int]
     threshold: float
+    bigram: dict[int, float | None] = field(default_factory=dict)
+    order_flagged: list[int] = field(default_factory=list)
 
 
 # ------------------------------------------------- module entry signatures
@@ -138,6 +151,22 @@ class VerifyResult:
 #                      languages: str = "eng") -> str   # path to text-layer PDF
 # verify.py    verify(pdf_path: str, pages: dict[int, str],
 #                     threshold: float = 0.85) -> VerifyResult
+#              reference_pages(pdf_path: str) -> dict[int, str]
+#                  # poppler -layout text per 1-indexed page; public so
+#                  # repair.py can reuse the order-true reference without a
+#                  # second pdftotext pass
+# repair.py    sanitize(markdown: str) -> str
+#                  # strip C0 controls (except \n\t) and private-use glyphs
+#              fix_word_reversal(pages: dict[int, str],
+#                                reference: dict[int, str]
+#                                ) -> tuple[dict[int, str], dict[int, int]]
+#                  # deterministic repair: a line whose REVERSED word order
+#                  # matches the poppler reference (bigram evidence) while
+#                  # the original doesn't gets reversed in place; returns
+#                  # (pages, {page: lines_fixed})
+#              clean_ocr_debris(markdown: str) -> tuple[str, int]
+#                  # drop OCR-noise fragment lines (photo-page tesseract
+#                  # debris); returns (markdown, lines_removed)
 # report.py    build_report(records: list[PageRecord], *, pdf_path: str,
 #                           route: DocRoute) -> dict       # JSON report
 #              render_report(report: dict) -> str          # human summary
