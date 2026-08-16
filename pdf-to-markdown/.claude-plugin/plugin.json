@@ -1,0 +1,9 @@
+{
+  "name": "pdf-to-markdown",
+  "description": "Convert a PDF to OKF-frontmatter markdown through a tiered, correctness-first pipeline — local extraction with routing, OCR for scanned pages, cross-engine verification, and Claude-vision escalation for flagged pages.",
+  "author": {
+    "name": "mikel-code"
+  },
+  "repository": "https://github.com/mikel-code/claude-skills",
+  "license": "MIT"
+}

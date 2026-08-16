@@ -1,0 +1,9 @@
+{
+  "name": "doc-to-markdown",
+  "description": "Convert office documents (docx, pptx, xlsx, odt/ods/odp, rtf, epub, csv) to OKF-frontmatter markdown via the anydoc CLI. PDFs are refused — use pdf-to-markdown instead.",
+  "author": {
+    "name": "mikel-code"
+  },
+  "repository": "https://github.com/mikel-code/claude-skills",
+  "license": "MIT"
+}
