@@ -175,7 +175,9 @@ def okf_frontmatter(*, url: str, out: TierOutput, attempts: list[TierAttempt],
     """
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     title = out.title or _fallback_title(url)
-    description = out.description or _derive_description(out.markdown)
+    # Tier-supplied descriptions get the same length cap as derived ones —
+    # some sites ship entire lead sections as og:description.
+    description = (out.description or _derive_description(out.markdown))[:300]
     host = _host(url) or "unknown"
 
     lines = [
