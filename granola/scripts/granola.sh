@@ -1,12 +1,32 @@
 #!/usr/bin/env bash
-# Mode A launcher for the granola skill. Resolves the API key reference from
-# secrets.toml and runs the client under `pass-cli run`, which injects the real
-# key into the client process only. This script never sees the plaintext key.
+# Launcher for the granola skill. Reads the pass:// reference from granola.env
+# and runs the client under `pass-cli run`, which resolves it against a
+# Proton Pass agent vault-scoped to a dedicated single-item vault, and
+# injects the real key into the client process only. This script never sees
+# the plaintext key.
+#
+# The Proton Pass runtime session (~/.pass-sessions/granola) expires every
+# ~2h. This script self-heals: if it's dead, it fetches the stored agent
+# token via your personal Proton Pass session (must be active) and logs the
+# runtime session back in, with no manual step. See
+# references/proton-pass-setup.md for what to do when the token itself (not
+# just the session) expires — that part stays manual on purpose.
 set -euo pipefail
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-REGISTRY="$SKILL_DIR/secrets.toml"
 CLIENT="$SKILL_DIR/scripts/granola_client.py"
+# Deliberately NOT derived from ambient PROTON_PASS_SESSION_DIR: a caller
+# (e.g. Claude Code's own harness) may have that set for unrelated reasons
+# (see PERSONAL_SESSION_DIR below) — this script's own runtime-session
+# concept needs its own, non-colliding override variable.
+GRANOLA_SESSION_DIR="${GRANOLA_RUNTIME_SESSION_DIR:-$HOME/.pass-sessions/granola}"
+TOKEN_REF="pass://Agents/Granola Agent Token/token"
+# The token fetch below must target the caller's real personal session,
+# never whatever PROTON_PASS_SESSION_DIR happens to be ambient (e.g. Claude
+# Code's harness pins its own Bash calls to a dead-end session dir by
+# design). Override via PROTON_PASS_PERSONAL_SESSION_DIR if this skill runs
+# somewhere other than macOS with pass-cli's default session location.
+PERSONAL_SESSION_DIR="${PROTON_PASS_PERSONAL_SESSION_DIR:-$HOME/Library/Application Support/proton-pass-cli}"
 
 PASS_CLI="${PASS_CLI:-/opt/homebrew/bin/pass-cli}"
 if [ ! -x "$PASS_CLI" ]; then
@@ -18,48 +38,51 @@ if [ -z "$PASS_CLI" ]; then
   exit 1
 fi
 
-# Read one key from the [services.granola] block of secrets.toml.
-registry_get() {
-  awk -v key="$1" '
-    /^\[services\.granola\]/ { in_block = 1; next }
-    /^\[/                    { in_block = 0 }
-    in_block {
-      line = $0
-      sub(/[ \t]*#.*$/, "", line)
-      if (line ~ "^[ \t]*" key "[ \t]*=") {
-        sub(/^[^=]*=[ \t]*/, "", line)
-        gsub(/^"|"$/, "", line)
-        print line
-        exit
-      }
-    }
-  ' "$REGISTRY"
-}
-
-ENV_VAR="$(registry_get env_var)"
-REFERENCE="$(registry_get reference)"
-ENABLED="$(registry_get enabled)"
-
-if [ "$ENABLED" != "true" ]; then
+ENV_FILE="$SKILL_DIR/granola.env"
+if [ ! -f "$ENV_FILE" ]; then
   cat >&2 <<EOF
-granola: service is disabled in $REGISTRY (enabled = false).
+granola: not configured — $ENV_FILE is missing.
 
 One-time setup (human present):
   1. In Granola (web app → Settings → API keys), create an API key (grn_…).
-  2. In Proton Pass, store it in the 'Agents' vault as item 'Granola' with a
-     custom field named exactly 'API Key' (field names are case-sensitive).
-  3. Bootstrap the agent session if not done yet:
-       PROTON_PASS_SESSION_DIR="\$HOME/.pass-sessions/claude-code" pass-cli login
-     (log in with a service/agent token scoped to the 'Agents' vault)
-  4. Set enabled = true in $REGISTRY.
+  2. In Proton Pass, create a dedicated 'Granola' vault and store the key
+     there as item 'Granola' with a custom field named exactly 'API Key'
+     (field names are case-sensitive).
+  3. Create the granola-reader agent, vault-scoped to that dedicated vault —
+     see $SKILL_DIR/references/proton-pass-setup.md for exact commands.
+  4. Copy $SKILL_DIR/granola.env.example to $ENV_FILE
+     (the reference is already correct; nothing to edit).
 EOF
   exit 2
 fi
 
-REF_FILE="$(mktemp "${TMPDIR:-/tmp}/granola-ref.XXXXXX")"
-chmod 600 "$REF_FILE"
-trap 'rm -f "$REF_FILE"' EXIT
-printf '%s=%s\n' "$ENV_VAR" "$REFERENCE" > "$REF_FILE"
+# Self-heal the runtime session: if it's dead, fetch the stored agent token
+# via the caller's personal session and log the runtime session back in.
+# Runs at most once per invocation — no retry loop.
+if ! PROTON_PASS_SESSION_DIR="$GRANOLA_SESSION_DIR" "$PASS_CLI" info >/dev/null 2>&1; then
+  TOKEN="$(PROTON_PASS_SESSION_DIR="$PERSONAL_SESSION_DIR" "$PASS_CLI" item view "$TOKEN_REF" 2>/dev/null)" || TOKEN=""
+  if [ -z "$TOKEN" ]; then
+    cat >&2 <<EOF
+granola: runtime session expired and the stored agent token could not be
+fetched from '$TOKEN_REF'.
 
-export PROTON_PASS_SESSION_DIR="${PROTON_PASS_SESSION_DIR:-$HOME/.pass-sessions/claude-code}"
-"$PASS_CLI" run --env-file "$REF_FILE" -- python3 "$CLIENT" "$@"
+This means either your personal Proton Pass session isn't active (run
+'pass-cli login' normally), or the token was never stored there — see
+$SKILL_DIR/references/proton-pass-setup.md ("Store the token").
+EOF
+    exit 3
+  fi
+  if ! PROTON_PASS_SESSION_DIR="$GRANOLA_SESSION_DIR" PROTON_PASS_PERSONAL_ACCESS_TOKEN="$TOKEN" "$PASS_CLI" login >/dev/null 2>&1; then
+    cat >&2 <<EOF
+granola: found the stored agent token but could not log the runtime session
+in with it. The token has likely reached its own (yearly) expiration — see
+$SKILL_DIR/references/proton-pass-setup.md ("Token expired") to renew it.
+EOF
+    exit 3
+  fi
+  unset TOKEN
+fi
+
+export PROTON_PASS_SESSION_DIR="$GRANOLA_SESSION_DIR"
+export PROTON_PASS_AGENT_REASON="${PROTON_PASS_AGENT_REASON:-granola skill: read Granola API key}"
+"$PASS_CLI" run --env-file "$ENV_FILE" -- python3 "$CLIENT" "$@"

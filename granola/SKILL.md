@@ -1,6 +1,6 @@
 ---
 name: granola
-description: "Access Granola meeting notes through the Granola API with a leak-resistant Proton Pass key (pass-cli Mode A). List meeting notes, show a note's summary, attendees, and optionally its transcript, and export notes to Markdown files. Use for /granola, \"list my granola meetings/notes\", \"show the notes/summary/transcript of that meeting\", or \"export that meeting to markdown\"."
+description: "Access Granola meeting notes through the Granola API with a leak-resistant Proton Pass key (pass-cli, dedicated-vault agent). List meeting notes, show a note's summary, attendees, and optionally its transcript, and export notes to Markdown files. Use for /granola, \"list my granola meetings/notes\", \"show the notes/summary/transcript of that meeting\", or \"export that meeting to markdown\"."
 license: MIT
 compatibility: Requires the Proton Pass CLI (pass-cli), Python 3, and network access to public-api.granola.ai
 ---
@@ -9,8 +9,17 @@ compatibility: Requires the Proton Pass CLI (pass-cli), Python 3, and network ac
 
 Read meeting notes from the [Granola API](https://docs.granola.ai) without the
 API key ever entering your context. All API access goes through
-`scripts/granola.sh`, which resolves the key from Proton Pass at spawn time and
-injects it only into the client process (Mode A).
+`scripts/granola.sh`, which reads a `pass://` reference from `granola.env` and
+resolves it via `pass-cli run`, which injects the real key into the client
+process only.
+
+The reference lives in `granola.env`, the native dotenv format `pass-cli run
+--env-file` consumes directly — not `secrets.toml`. This skill intentionally
+diverges from the TOML-registry pattern used elsewhere (e.g. the second-brain
+`.tooling/secrets.toml`): there is no cross-vendor standard for `ENV_VAR →
+secret-reference` mappings, and dotenv-with-references is the closest thing to
+a de-facto one (it's what `pass-cli` and 1Password's `op` both implement,
+flag-for-flag identical `--env-file` semantics).
 
 ## Security rules — non-negotiable
 
@@ -20,6 +29,16 @@ injects it only into the client process (Mode A).
   `curl` calls to `public-api.granola.ai`.
 - Never wrap your own process (or any long-lived process) in `pass-cli run` —
   one launcher invocation per command, carrying only this key.
+- `pass-cli run`'s output masking is best-effort: it only catches literal
+  occurrences of the resolved value in streams it controls. An encoded/
+  transformed key, or anything the client writes straight to a file, is not
+  covered — don't rely on masking as a guarantee.
+- Direct `pass-cli` invocation from a Claude Code session may be hook-blocked
+  at the harness level (session repointed to a dead end, plus a `PreToolUse`
+  deny on any `pass-cli`/`PROTON_PASS_` command) — this reinforces, not
+  replaces, the "only through `scripts/granola.sh`" rule above. If it fires,
+  it means something tried to reach `pass-cli` directly; route through the
+  script instead of working around the block.
 
 ## Commands
 
@@ -68,24 +87,40 @@ Rate limit is 5 requests/second — fine for normal use; avoid tight loops over
 
 ## Setup (one-time, human present)
 
-The service ships disabled. `granola.sh` prints these steps itself when run
-while disabled:
+The service ships unconfigured. `granola.sh` prints a short version of these
+steps itself when `granola.env` is missing; full commands, including creating
+and renewing the Proton Pass agent token, are in
+[references/proton-pass-setup.md](references/proton-pass-setup.md) — **the
+user must run all of it themselves**, never on the agent's behalf, since it
+handles a raw credential.
 
 1. In Granola (web app → Settings → API keys), create an API key (`grn_…`).
-2. In Proton Pass, store it in the **Agents** vault as item **Granola**, custom
-   field named exactly **API Key** (field names are case-sensitive).
-3. Bootstrap the dedicated agent session (the user must run this themselves,
-   with a service/agent token scoped to the Agents vault):
-   `PROTON_PASS_SESSION_DIR="$HOME/.pass-sessions/claude-code" pass-cli login`
-4. Set `enabled = true` in this skill's `secrets.toml`.
+2. In Proton Pass, create a dedicated **Granola** vault and store the key
+   there as item **Granola**, custom field named exactly **API Key**
+   (field names are case-sensitive; a dedicated vault is required, not just
+   an item-level grant — see the runbook for why).
+3. Create the `granola-reader` agent, vault-scoped to that dedicated vault —
+   see the runbook for exact commands.
+4. Copy `granola.env.example` to `granola.env` in this skill directory (the
+   reference is already correct; nothing to edit).
 
 ## Troubleshooting
 
-- **"service is disabled"** → setup above not completed; walk the user through it.
-- **"No active session" / pass-cli auth errors** → the Proton session expired.
-  Ask the user to re-run step 3 themselves (it is interactive); never attempt
-  the login for them.
+- **"not configured" / `granola.env` missing** → setup above not completed;
+  walk the user through it.
+- **"runtime session expired and the stored agent token could not be
+  fetched"** (exit 3) → `granola.sh` self-heals the ~2h runtime session
+  automatically on every invocation; this only surfaces when that self-heal
+  itself failed — either the user's personal Proton Pass session is stale
+  (ask them to run `pass-cli login` normally) or the token was never stored
+  (point them at the runbook's "Store the token" step). Never attempt the
+  login for them — it requires a token only they hold.
+- **"found the stored agent token but could not log the runtime session in"**
+  (exit 3) → the agent token itself expired (yearly, not the ~2h session).
+  Point the user at the runbook's "Token expired" section; never attempt the
+  renewal for them.
 - **401 from Granola** → key missing/revoked in the Proton Pass item; ask the
-  user to check item `Granola`, field `API Key`, in the Agents vault.
+  user to check item `Granola`, field `API Key`, in the dedicated `Granola`
+  vault.
 - **pass-cli not found** → install Proton Pass CLI, or set `PASS_CLI` to its
   absolute path (cron/scheduled runs have minimal PATH).
