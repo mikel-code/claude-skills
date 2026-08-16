@@ -409,6 +409,7 @@ def run_okf_checks():
 E2E_CHECKS = [
     "probe_simple_converts_clean",
     "docling_trap_page_not_silently_lost",
+    "vision_flow_action_block_and_reconcile",
 ]
 
 ORCHESTRATOR = TESTS_DIR.parent / "scripts" / "pdf_to_markdown.py"
@@ -490,8 +491,46 @@ def run_e2e_checks():
                 f"scanned body absent from markdown"
             )
 
+    def vision_flow_action_block_and_reconcile():
+        # Exit-4 runs must print the ACTION REQUIRED block on stdout (so the
+        # agent needs no report.json parsing), and --reconcile must flip a
+        # vision-patched page to status 'vision' and exit 0. Forced flagged
+        # run: bogus OCR language on the scanned fixture — fully offline.
+        import json
+        import re as _re
+        import subprocess
+
+        with tempfile.TemporaryDirectory(prefix="pdf2md-e2e-") as tmp:
+            out_md = Path(tmp) / "out.md"
+            proc = subprocess.run(
+                ["uv", "run", str(ORCHESTRATOR), str(PROBE_SCANNED),
+                 "-l", "xyz", "-o", str(out_md)],
+                capture_output=True, text=True, timeout=600,
+            )
+            assert proc.returncode == contract.EXIT_FLAGGED, (
+                f"exit={proc.returncode}; stderr tail: {proc.stderr[-300:]!r}")
+            assert "ACTION REQUIRED" in proc.stdout, "action block not on stdout"
+            assert "--reconcile" in proc.stdout, "reconcile step not named"
+            text = out_md.read_text(encoding="utf-8")
+            patched = _re.sub(
+                r"<!-- page 1: flagged[^\n]*-->",
+                "<!-- page 1: transcribed by vision -->\n\n# Patched",
+                text)
+            out_md.write_text(patched, encoding="utf-8")
+            rproc = subprocess.run(
+                ["uv", "run", str(ORCHESTRATOR), "--reconcile", str(out_md)],
+                capture_output=True, text=True, timeout=600,
+            )
+            assert rproc.returncode == contract.EXIT_CLEAN, (
+                f"reconcile exit={rproc.returncode}: {rproc.stderr[-200:]!r}")
+            report = json.loads(
+                out_md.with_suffix(".report.json").read_text(encoding="utf-8"))
+            assert report["pages"][0]["status"] == "vision", report["pages"][0]
+            assert report["clean"] is True and not report["vision"]["pending_pages"]
+
     run_check("e2e", "probe_simple_converts_clean", probe_simple_converts_clean)
     run_check("e2e", "docling_trap_page_not_silently_lost", docling_trap_page_not_silently_lost)
+    run_check("e2e", "vision_flow_action_block_and_reconcile", vision_flow_action_block_and_reconcile)
 
 
 # --------------------------------------------------------------------- main

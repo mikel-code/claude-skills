@@ -41,22 +41,26 @@ is ever silently dropped).
 
 ## Tier-3 workflow (you, on exit 4)
 
-1. Read `<stem>.report.json` → `vision.pending_pages` and each page's
-   `reasons` (scanned / low_recall / suspected_garbled_text / empty_output…).
-2. Read those pages of the **source PDF** directly with the Read tool
+On exit 4 the command's own output ends with an `ACTION REQUIRED` block
+listing the flagged pages, their reasons, and these exact steps — **you never
+need to open or parse `<stem>.report.json`** (it exists as the provenance
+artifact, nothing more).
+
+1. Read the listed pages of the **source PDF** directly with the Read tool
    (`pages` parameter; ≤20 pages per request) — you get text + page image.
-3. In the markdown file, replace each
+2. In the markdown file, replace each
    `<!-- page N: flagged (…) — awaiting vision transcription -->` placeholder
-   with your transcription of that page. If partial extractor output follows
-   the placeholder, use it as a hint but trust the page image.
-4. Label what you produced: keep an HTML comment
-   `<!-- page N: transcribed by vision -->` above the transcribed content.
-5. **Numeric tables: cross-foot before accepting.** Vision transcription
+   with your transcription of that page, headed by the label
+   `<!-- page N: transcribed by vision -->`. If partial extractor output
+   follows the placeholder, use it as a hint but trust the page image.
+3. **Numeric tables: cross-foot before accepting.** Vision transcription
    fails silently (plausible wrong values) — check totals/sums where the
    table implies them; if a figure is illegible, write `[illegible]` rather
    than a guess.
-6. Update the report file: set those pages' `status` to `"vision"` and
-   `clean` accordingly, so provenance survives.
+4. Run `pdf_to_markdown.py --reconcile <out.md>` — it re-derives the report
+   statuses from the markdown's own markers (placeholder gone + vision label
+   present ⇒ `vision`) and exits 0 when every page is resolved. Never edit
+   the report JSON by hand.
 
 With `--verify`, additionally sample 2–3 *unflagged* pages, Read them, and
 compare against the markdown; report discrepancies to the user rather than
