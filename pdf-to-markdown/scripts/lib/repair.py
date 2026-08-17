@@ -1,6 +1,6 @@
 """Deterministic text repair (contract: repair.py signature block).
 
-Six pure functions fixing defect classes CONFIRMED on a real document
+Seven pure functions fixing defect classes CONFIRMED on a real document
 (CCBPBAbril2026.pdf, Banco de España, 424 pp — docling route + tesseract OCR
 on decorative pages). Each repair is deterministic and evidence-gated: no
 model calls, no guessing. Anything not provably broken is left byte-identical.
@@ -237,6 +237,60 @@ model calls, no guessing. Anything not provably broken is left byte-identical.
    sentences that merely START with a number never match). Same shape as
    fix_word_reversal: 1-indexed pages, returns (pages, {page: changes}),
    and a page with zero changes comes back as the SAME string object.
+   Page-leading dedent (fourth field round, confirmed on field pages
+   86/87): the cross-page carry (class-A attach) and class-C re-leveling
+   can indent material at the TOP of a page chunk whose parent item lives
+   on the PREVIOUS page. At assembly the chunks are separated by
+   `<!-- p.N -->` / `<!-- image -->` comment lines plus blank lines,
+   which BREAK markdown list continuity — page-leading 4-space indents
+   therefore render as indented CODE BLOCKS, not list continuations. So
+   pass 5 dedents the page-leading unparented run: every indented content
+   line before the first column-0 list item (column-0 paragraphs are
+   neutral — they parent nothing — and any structural line ends the scan)
+   is shifted left by the running minimum indent of the run, so the first
+   run line lands at column 0 and RELATIVE nesting below it survives
+   (continuation at 4 + bullets at 4 -> both 0; a bullet at 8 under a
+   bullet at 4 -> 4; a lone deep carry attachment above shallower bullets
+   flattens to 0 rather than keeping an unparented offset). The
+   cross-page continuity is accepted as unexpressible: a plain paragraph
+   at page start is the correct rendering. Because re-leveling and the
+   dedent deliberately cancel on already-dedented input, idempotency is
+   enforced on OUTPUT: a page whose final text equals its input is
+   returned as the same object with no count.
+
+7. mark_footnote_blocks(markdown) — page-trailing footnote presentation.
+   Vision-transcribed pages end with a `---` rule and `<sup>N</sup>`
+   footnote markers; machine-extracted pages carry the same footnotes as
+   bare "N Text…" paragraphs (docling flattens the superscript rank).
+   This repair converges the machine pages on the vision convention,
+   gated conservatively — every gate must hold, any doubt does nothing:
+     * block shape: the maximal trailing run of the page after its last
+       structural line (heading / table / blockquote / HTML / fence /
+       image / horizontal rule; `<!--` comments are NEUTRAL furniture —
+       image placeholders routinely trail the footnotes) is scanned for
+       STARTER lines —
+       column-0 plain paragraphs (never list items) matching
+       "^\\d{1,2} + [«(uppercase/¡]". The block runs from the first
+       starter to the page end; non-starter plain paragraphs and list
+       items inside it are footnote continuations (real footnotes quote
+       multi-paragraph article text and letter/dash sublists);
+     * integers: all starters' numbers are 1..60 and STRICTLY ascending
+       across the run (quoted statute sublists restart at 1 and fail
+       this — field page 317 is the confirmed keep-case);
+     * on-page evidence: every starter number must also occur ABOVE the
+       block as a flattened superscript reference — word + space(s) +
+       N + space(s) + punctuation ("Circular 5/2012 6 .",
+       "Ley 16/2011 7 ,"): the space before the punctuation never
+       happens in clean prose, which is what makes the pattern safe.
+       Bare "N + lowercase word" was evaluated and REJECTED as evidence:
+       it matches every date ("el 15 de diciembre") and positional
+       reference ("anejo 1 de la Circular") in the document.
+   When all gates pass: insert "---" + blank line before the first
+   starter and rewrite each starter's leading "N " to "<sup>N</sup> ".
+   Returns (markdown, starters_converted). Vision pages cannot re-match
+   (their `---` is structural and `<sup>…` starts with "<"), and the
+   rewrite destroys the starter shape, so the repair is idempotent.
+   Ordering: the orchestrator runs this AFTER fix_list_structure.
 
 Stdlib only; imports contract only (per module rules). Self-test:
 `uv run repair.py` — fixtures are verbatim excerpts of the real document's
@@ -1087,6 +1141,50 @@ def _ls_ordinal(marker: str, fam: str) -> int | None:
     return None
 
 
+def _ls_dedent_leading(lines: list[str]) -> tuple[list[str], int]:
+    """Dedent the page-leading unparented run (module doc item 6).
+
+    A page chunk is separated from its predecessor by `<!-- p.N -->` /
+    `<!-- image -->` comment lines and blanks at assembly, which break
+    markdown list continuity — so indentation whose parent item is not
+    present ABOVE it in the same chunk renders as an indented code
+    block. The run: indented content lines scanned from the top of the
+    page until the first column-0 LIST ITEM (which parents everything
+    after it). Column-0 plain paragraphs are neutral (they parent
+    nothing and need no shift); blanks and `<!--` comments are skipped;
+    any structural line (fence, heading, table, quote, HTML, image, HR
+    — _LS_SKIP_RE) ends the scan unconditionally so fenced page-leading
+    code is never touched. Each run line shifts left by the minimum
+    indent seen SO FAR in the run (running minimum): the first run line
+    always lands at column 0, and later lines keep their relative depth
+    below what is above them — a bullet at 8 under a bullet at 4 goes to
+    4, while a lone deep carry attachment sitting ABOVE shallower
+    bullets flattens to 0 instead of keeping an unparented offset.
+    Returns (lines, n_dedented).
+    """
+    run: list[tuple[int, int]] = []      # (line index, shift)
+    run_min: int | None = None
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if not s or s.startswith("<!--"):
+            continue                     # blanks/comments: neutral furniture
+        if _LS_SKIP_RE.match(line):
+            break                        # structural: never dedent past it
+        ind = len(line) - len(line.lstrip())
+        if ind == 0:
+            if _LS_ITEM_RE.match(line):
+                break                    # col-0 item parents what follows
+            continue                     # col-0 paragraph: neutral
+        run_min = ind if run_min is None else min(run_min, ind)
+        run.append((i, run_min))
+    changed = 0
+    for i, shift in run:
+        if shift:
+            lines[i] = lines[i][shift:]
+            changed += 1
+    return lines, changed
+
+
 def _ls_repair_page(md: str, ref_text: str,
                     carry: dict | None = None) -> tuple[str, int, dict]:
     """Repair one page. Returns (new_md, changes, carry_out).
@@ -1293,6 +1391,15 @@ def _ls_repair_page(md: str, ref_text: str,
             # (footnote zones sit below the list in print order); the
             # next page's indent gate is the real guard against false
             # attachment.
+
+    # -- pass 5: page-leading dedent (module doc item 6) -----------------
+    # Carry attachment and class-C re-leveling can indent page-leading
+    # material whose parent item sits on the previous page; the assembly
+    # anchors break list continuity there, so that indentation would
+    # render as a code block. Dedent the unparented leading run to
+    # column 0, preserving relative nesting within it.
+    out, n_dedent = _ls_dedent_leading(out)
+    changes += n_dedent
     return "\n".join(out), changes, carry_out
 
 
@@ -1306,7 +1413,11 @@ def fix_list_structure(
     list item at all, are returned untouched (and reset the cross-page
     carry — an attachment must never jump a skipped page). Returns
     (pages, {page: changes}); counts hold only pages with >= 1 change,
-    and untouched pages keep their original string identity.
+    and untouched pages keep their original string identity. Idempotency
+    is judged on OUTPUT: re-leveling and the page-leading dedent (module
+    doc item 6) deliberately cancel on already-dedented input, so a page
+    whose repaired text equals its input is returned as the same object
+    with no count, whatever churn happened internally.
     """
     out: dict[int, str] = {}
     counts: dict[int, int] = {}
@@ -1320,10 +1431,86 @@ def fix_list_structure(
             carry = {}
             continue
         new, n, carry = _ls_repair_page(pages[p], ref, carry or None)
-        out[p] = new if n else pages[p]   # same object: provably untouched
-        if n:
+        if n and new != pages[p]:
+            out[p] = new
             counts[p] = n
+        else:
+            out[p] = pages[p]   # same object: provably untouched
     return out, counts
+
+
+# ------------------------------------------------------- footnote blocks
+
+FN_MAX_NUM = 60   # footnote numbers above this are never markers here
+
+# Starter: column-0 plain paragraph opening with a small bare number, a
+# space run, then «, (, ¡ or an uppercase (incl. accented) letter — the
+# machine flattening of a printed footnote line. Anchored: indented lines
+# and list items never match (list-item candidates are filtered upstream).
+_FN_START_RE = re.compile(r"^(\d{1,2})[ \t\xa0]+(?=[«(¡A-ZÁÉÍÓÚÑÜ])")
+# Structural lines that bound the trailing block scan: headings, tables,
+# blockquotes, HTML/comments, fences, images, and the --- rule that
+# _LS_SKIP_RE knows; _HR_RE adds the ***/___ variants.
+
+
+def _fn_ref_re(n: int) -> re.Pattern:
+    """Flattened superscript reference for footnote n (module doc item 7):
+    word char + space(s) + n + space(s) + punctuation. The space BEFORE
+    the punctuation ("Circular 5/2012 6 .", "Ley 16/2011 7 ,") never
+    occurs in clean prose — that gap is the flattened superscript rank.
+    "n + lowercase" evidence is deliberately rejected (dates, "anejo 1
+    de…" positional references)."""
+    return re.compile(rf"\w[ \t\xa0]+{n}(?!\d)[ \t\xa0]+[.,;:)(«»]")
+
+
+def mark_footnote_blocks(markdown: str) -> tuple[str, int]:
+    """Mark the page-trailing footnote block the way vision pages do.
+
+    Conservative, all-gates-or-nothing (module doc item 7): detect the
+    trailing run of bare-number footnote paragraphs, require the numbers
+    to be small, strictly ascending, and each referenced above as a
+    flattened superscript; then insert a `---` rule before the block and
+    rewrite each "N " starter to "<sup>N</sup> ". Any failed gate leaves
+    the page byte-identical. Returns (markdown, starters_converted).
+    """
+    lines = markdown.split("\n")
+    # Trailing scan region: everything after the last structural line.
+    # `<!-- image -->` placeholders and other comments are NEUTRAL, not
+    # structural — they are invisible furniture and routinely trail the
+    # page's footnotes (field pages 48/49/151/187/287/335).
+    tail_start = 0
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith("<!--"):
+            continue
+        if _LS_SKIP_RE.match(line) or _HR_RE.match(line):
+            tail_start = i + 1
+    starters: list[tuple[int, int]] = []
+    for i in range(tail_start, len(lines)):
+        line = lines[i]
+        if not line.strip() or _LIST_ITEM_RE.match(line):
+            continue   # blanks and list items: footnote continuations
+        m = _FN_START_RE.match(line)
+        if m:
+            starters.append((i, int(m.group(1))))
+    if not starters:
+        return markdown, 0
+    nums = [n for _, n in starters]
+    if any(not 1 <= n <= FN_MAX_NUM for n in nums):
+        return markdown, 0
+    if any(b <= a for a, b in zip(nums, nums[1:])):
+        return markdown, 0   # quoted sublists restart numbering — keep
+    first_i = starters[0][0]
+    above = "\n".join(lines[:first_i])
+    if any(not _fn_ref_re(n).search(above) for n in nums):
+        return markdown, 0   # unreferenced number: not this page's notes
+    out = list(lines)
+    for i, n in starters:
+        body = out[i][len(str(n)):].lstrip(" \t\xa0")
+        out[i] = f"<sup>{n}</sup> {body}"
+    block = ["---", ""] if first_i > 0 and not lines[first_i - 1].strip() \
+        else ["", "---", ""]
+    out[first_i:first_i] = block
+    return "\n".join(out), len(starters)
 
 
 # ---------------------------------------------------------------- self-test
@@ -1670,6 +1857,84 @@ _LIST_REF_87 = """\
                          por descubierto ni GRPD adicionales por estos mismos saldos.
 """
 
+# Verbatim field page 87 (abridged): machine-extracted footnote block —
+# bare "6 «…" / "7 «…" starters, multi-paragraph quoted content with
+# letter/roman/dash sublists, and the flattened superscript references
+# ("Circular 5/2012 6 .", "Ley 16/2011 7 ,") in the body above.
+_FN_MD_87 = """\
+<!-- image -->
+
+En el caso de girarse estos GRPD de forma previa a la liquidación del descubierto, se entenderá  que  dichos  gastos  forman  parte  de  los  conceptos  repercutidos, a efectos de lo establecido en la norma 13.ª, apartado 7.e), de la Circular 5/2012 6 .
+
+- iii) En el momento de la apertura del descubierto, y con independencia de las previsiones del artículo\xa020.3 de la Ley 16/2011 7 ,  deberá informarse al cliente, de forma clara y concisa, del período de que dispone para regularizar el saldo deudor.
+
+- iv) Una vez que se realice la liquidación del descubierto, el cliente debe disponer de un plazo mínimo para satisfacer el saldo deudor.
+
+6 «7 En  el  cálculo  de  la  tasa  anual  equivalente  de  las  operaciones  de  activo,  se  tendrán  en  cuenta  los  siguientes  criterios específicos:
+
+[…]
+
+e) En los descubiertos tácitos en cuentas a la vista, la tasa anual equivalente se calculará teniendo en cuenta los intereses devengados.
+
+Como excepción a lo anterior, cuando las comisiones giren sobre el mayor descubierto, la tasa anual equivalente se obtendrá como sumatorio de:
+
+i) la tasa anual equivalente de los intereses devengados por el descubierto durante el período de liquidación de este, y
+
+ii) la tasa anual equivalente de las comisiones que se adeuden durante el período de liquidación de este.
+
+- la tasa anual equivalente de los intereses se calculará teniendo en cuenta el saldo medio deudor del período de liquidación;
+
+De acuerdo con lo establecido en el segundo párrafo del apartado 1 del artículo 3 de la Orden, en los descubiertos no podrá reiterarse la aplicación de comisiones».
+
+7 «En caso de descubierto tácito importante que se prolongue durante un período superior a un mes, el prestamista informará al consumidor sin demora de los siguientes extremos:
+
+- a) Del descubierto tácito.
+- b) Del importe del descubierto tácito.
+- c) Del tipo deudor.
+- d) De las posibles penalizaciones, gastos o intereses de demora aplicables».
+"""
+
+# Ascending bare-number paragraphs that are NOT footnotes: the integers
+# never occur above as flattened superscript references (a numbered list
+# docling flattened to paragraphs) — the on-page-evidence gate keeps it.
+_FN_MD_UNREFERENCED = """\
+Los criterios aplicables a la reclamación de posiciones deudoras son los siguientes, según la práctica supervisora del Banco de España:
+
+1 Resulta imprescindible su previsión y concreción en la información precontractual y en los propios contratos bancarios.
+
+2 Además, en dicha información se deberá recoger el importe concreto de los gastos que se han de repercutir.
+
+3 Finalmente, de producirse el efectivo devengo de los citados gastos, se deberá informar de estos con carácter previo a su cargo.
+"""
+
+# Field page 317 shape: footnote 6 quotes a statute whose OWN numbered
+# document lists restart at 1 — the run is not strictly ascending.
+_FN_MD_NONASCENDING = """\
+Se acreditará mediante lo previsto en el número 3 del artículo 3 del RD-Ley 6/2012 6 .
+
+6 «3 La concurrencia de las circunstancias a que se refiere el apartado 1 se acreditará por el deudor mediante la presentación de los siguientes documentos:
+
+1 Certificado de rentas y, en su caso, certificado relativo a la presentación del Impuesto de Patrimonio.
+
+2 Últimas tres nóminas percibidas.
+
+1 Libro de familia o documento acreditativo de la inscripción como pareja de hecho.
+
+2 Certificado de empadronamiento relativo a las personas empadronadas en la vivienda».
+"""
+
+# Vision-transcribed page shape: the --- rule and <sup> markers already
+# follow the convention; nothing here may re-match.
+_FN_MD_VISION = """\
+Texto del cuerpo con su referencia<sup>4</sup> y otra más<sup>5</sup> en la misma página.
+
+---
+
+<sup>4</sup> El artículo 7.3 de la orden señala lo siguiente: «Los documentos contractuales deberán recoger de forma explícita y clara los siguientes extremos».
+
+<sup>5</sup> La norma décima, apartado 3, indica lo siguiente: «No se incluirá en el contrato ningún concepto que resulte innecesario».
+"""
+
 if __name__ == "__main__":
     failures = 0
 
@@ -1947,18 +2212,23 @@ if __name__ == "__main__":
     lf_pages = {86: _LIST_MD_86, 87: _LIST_MD_87}
     lf_refs = {86: _LIST_REF_86, 87: _LIST_REF_87}
     lf_fixed, lf_counts = fix_list_structure(lf_pages, lf_refs)
-    check("change counts match the field run", lf_counts == {86: 6, 87: 3},
+    check("change counts match the field run", lf_counts == {86: 8, 87: 4},
           f"counts={lf_counts}")
     out86, out87 = lf_fixed[86], lf_fixed[87]
     check("class B: invented '2.' dropped, printed 'ii)' kept",
           "- ii) Para exigir el reembolso" in out86
           and "2. ii)" not in out86)
-    check("class C: bullets re-nested under the printed '3' marker",
-          "\n    - El canal empleado" in out86
+    check("class C: sub-bullets re-nested under the printed '3' marker",
+          "\n    - Se deberá informar" in out86
           and "\n    - Las  comunicaciones" in out86
           and "\n- 3 Finalmente" in out86)
-    check("class A: page-initial paragraph attached via cross-page carry",
-          out87.startswith("<!-- image -->\n\n    En el caso de girarse"))
+    check("page-leading dedent: unparented leading bullets back at col 0",
+          "\n- El canal empleado" in out86
+          and "\n    - El canal empleado" not in out86
+          and "\n- La incompatibilidad" in out86)
+    check("page-leading dedent: carry-attached page-initial paragraph "
+          "emitted flat (anchors break cross-page list continuity)",
+          out87.startswith("<!-- image -->\n\nEn el caso de girarse"))
     check("class A: in-page continuation paragraphs attached",
           "\n    Por otra parte, se estima" in out87
           and "\n    Los  saldos  en  descubierto" in out87)
@@ -2016,6 +2286,73 @@ if __name__ == "__main__":
     lf_fixed, lf_counts = fix_list_structure({86: _LIST_MD_86}, {86: ""})
     check("empty reference -> untouched", lf_counts == {}
           and lf_fixed[86] is _LIST_MD_86, f"counts={lf_counts}")
+
+    print("fix_list_structure (page-leading dedent negatives)")
+    # A legit page-leading fenced code block: the fence is structural and
+    # ends the dedent scan — indented fence content must survive.
+    md_fence = ("```\n    indented code line\n        deeper code\n```\n\n"
+                "- 1 Resulta imprescindible su previsión y concreción en "
+                "la información precontractual.\n")
+    ref_fence = ("  1   Resulta imprescindible su previsión y concreción "
+                 "en la\n      información precontractual.\n")
+    lf_fixed, lf_counts = fix_list_structure({1: md_fence}, {1: ref_fence})
+    check("page-leading code fence untouched (same object)",
+          lf_counts == {} and lf_fixed[1] is md_fence,
+          f"counts={lf_counts}")
+    # Sub-items under a column-0 item on the SAME page are parented:
+    # their indentation is legitimate and must not be dedented.
+    md_ok2 = ("- 3 Finalmente, de producirse el efectivo devengo de los "
+              "gastos:\n"
+              "    - Se deberá informar de estos con carácter previo a su "
+              "cargo.\n")
+    ref_ok2 = ("  3     Finalmente, de producirse el efectivo devengo de "
+               "los gastos:\n\n"
+               "           • Se deberá informar de estos con carácter "
+               "previo a su cargo.\n")
+    lf_fixed, lf_counts = fix_list_structure({1: md_ok2}, {1: ref_ok2})
+    check("parented sub-item indentation kept (same object)",
+          lf_counts == {} and lf_fixed[1] is md_ok2, f"counts={lf_counts}")
+
+    # ------------------------------------------------ mark_footnote_blocks
+    print("mark_footnote_blocks (field page 87: machine footnote block)")
+    marked, n = mark_footnote_blocks(_FN_MD_87)
+    check("both footnote starters converted", n == 2, f"n={n}")
+    check("--- rule inserted before the block",
+          "\n---\n\n<sup>6</sup> «7 En  el  cálculo" in marked)
+    check("second starter rewritten",
+          "\n<sup>7</sup> «En caso de descubierto tácito" in marked)
+    check("bare starters gone",
+          "\n6 «7 En" not in marked and "\n7 «En caso" not in marked)
+    check("continuation paragraphs and sublists intact",
+          "Como excepción a lo anterior" in marked
+          and "- a) Del descubierto tácito." in marked
+          and "[…]" in marked)
+    check("body above the block untouched",
+          "de la Circular 5/2012 6 ." in marked
+          and "de la Ley 16/2011 7 ," in marked)
+    again, n2 = mark_footnote_blocks(marked)
+    check("idempotent", n2 == 0 and again == marked, f"second pass={n2}")
+
+    print("mark_footnote_blocks (negatives: every gate)")
+    fixed, n = mark_footnote_blocks(_FN_MD_UNREFERENCED)
+    check("ascending numbered paragraphs w/o on-page refs kept", n == 0
+          and fixed == _FN_MD_UNREFERENCED, f"n={n}")
+    fixed, n = mark_footnote_blocks(_FN_MD_NONASCENDING)
+    check("non-ascending run (p.317 quoted-sublist shape) kept", n == 0
+          and fixed == _FN_MD_NONASCENDING, f"n={n}")
+    fixed, n = mark_footnote_blocks(_FN_MD_VISION)
+    check("vision page with --- and <sup> not double-marked", n == 0
+          and fixed == _FN_MD_VISION, f"n={n}")
+    toc = "\n".join(
+        [f"- 2.{i} Entrada de prueba número {i} {60 + i}"
+         for i in range(1, 10)]) + "\n\n42\n"
+    fixed, n = mark_footnote_blocks(toc)
+    check("numbers-heavy TOC page kept", n == 0 and fixed == toc, f"n={n}")
+    fixed, n = mark_footnote_blocks(_MD_103)
+    check("table page kept", n == 0 and fixed == _MD_103, f"n={n}")
+    fixed, n = mark_footnote_blocks(_MD_HEALTHY)
+    check("healthy prose page kept", n == 0 and fixed == _MD_HEALTHY,
+          f"n={n}")
 
     if failures:
         print(f"\n{failures} self-test check(s) FAILED")

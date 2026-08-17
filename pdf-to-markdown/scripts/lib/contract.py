@@ -178,6 +178,11 @@ class VerifyResult:
 #                  # remove wrapped-line fragments duplicated before their
 #                  # full line (footnote/TOC reordering artifacts); only on
 #                  # provable (truncation-tolerant) substring duplicates
+#              mark_footnote_blocks(markdown: str) -> tuple[str, int]
+#                  # page-trailing footnote block (small ascending ints,
+#                  # each referenced on-page as a flattened superscript):
+#                  # prefix with --- and rewrite markers to <sup>N</sup>,
+#                  # matching the vision-page convention
 #              fix_list_structure(pages: dict[int, str],
 #                                 reference: dict[int, str]
 #                                 ) -> tuple[dict[int, str], dict[int, int]]

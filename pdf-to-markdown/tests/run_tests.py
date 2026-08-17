@@ -701,6 +701,192 @@ def run_repair3_checks():
         run_check("repair3", name, locals()[name])
 
 
+# ----------------------------------------- repair4 (field-defect round 4)
+#
+# Regression checks for the fourth field-hardening round against
+# CCBPBAbril2026.md: page-leading dedent inside repair.fix_list_structure
+# (cross-page carry attachments and class-C re-levels at the top of a
+# page chunk rendered as indented CODE BLOCKS, because the <!-- p.N -->
+# assembly anchors break markdown list continuity), and the new
+# repair.mark_footnote_blocks (machine pages' trailing footnote blocks
+# converge on the vision-page `---` + <sup>N</sup> convention). Fixture
+# strings are verbatim (abridged) excerpts of the real defect document.
+
+REPAIR4_CHECKS = [
+    "list_dedent_carry_attachment_stays_flat",
+    "list_dedent_releveled_leading_bullets",
+    "list_dedent_fence_and_parented_negatives",
+    "footnote_block_marked",
+    "footnote_block_gate_negatives",
+]
+
+_R4_MD_P1 = ("- i) Se deberá dar la posibilidad a los clientes de "
+             "desautorizar el cargo de recibos en descubierto.")
+_R4_REF_P1 = (
+    "                  i)    Se deberá dar la posibilidad a los clientes "
+    "de desautorizar el cargo\n"
+    "                        de recibos en descubierto.")
+_R4_MD_P2 = (
+    "<!-- image -->\n\n"
+    "En el caso de girarse estos GRPD de forma previa a la liquidación "
+    "del descubierto, se entenderá que dichos gastos forman parte del "
+    "coste del crédito.\n\n"
+    "- ii) Para exigir el reembolso del saldo deudor deberá realizarse "
+    "la liquidación previa del descubierto tácito.")
+# Same page as shipped by the PREVIOUS pipeline version: the carry
+# attachment left a page-leading 4-space indent (code block at render).
+_R4_MD_P2_INDENTED = _R4_MD_P2.replace(
+    "\n\nEn el caso de girarse", "\n\n    En el caso de girarse")
+_R4_REF_P2 = (
+    "                        En el caso de girarse estos GRPD de forma "
+    "previa a la liquidación del descubierto,\n"
+    "                        se entenderá que dichos gastos forman parte "
+    "del coste del crédito.\n\n"
+    "                  ii)   Para exigir el reembolso del saldo deudor "
+    "deberá realizarse la\n"
+    "                        liquidación previa del descubierto tácito.")
+_R4_MD_RELEVEL = (
+    "- El canal empleado para efectuar las comunicaciones, que deberá "
+    "ser el adecuado y proporcionado.\n"
+    "- 3 Finalmente, de producirse el efectivo devengo de los citados "
+    "gastos:\n"
+    "- Se deberá informar de estos con carácter previo a su cargo, "
+    "preferiblemente en la propia comunicación.")
+_R4_REF_RELEVEL = (
+    "                        • El canal empleado para efectuar las "
+    "comunicaciones, que deberá ser el\n"
+    "                          adecuado y proporcionado.\n\n"
+    "              3         Finalmente, de producirse el efectivo "
+    "devengo de los citados gastos:\n\n"
+    "                        • Se deberá informar de estos con carácter "
+    "previo a su cargo, preferiblemente\n"
+    "                          en la propia comunicación.")
+_R4_MD_FENCE = ("```\n    indented code line\n```\n\n"
+                "- 1 Resulta imprescindible su previsión y concreción "
+                "en la información precontractual.\n")
+_R4_REF_FENCE = ("  1   Resulta imprescindible su previsión y concreción "
+                 "en la\n      información precontractual.\n")
+_R4_MD_FN = (
+    "Se entenderá a efectos de lo establecido en la norma 13.ª, apartado "
+    "7.e), de la Circular 5/2012 6 .\n\n"
+    "- iii) En el momento de la apertura del descubierto, y con "
+    "independencia de las previsiones del artículo 20.3 de la "
+    "Ley 16/2011 7 ,  deberá informarse al cliente.\n\n"
+    "6 «7 En  el  cálculo  de  la  tasa  anual  equivalente  de  las  "
+    "operaciones  de  activo, se tendrán en cuenta los siguientes "
+    "criterios específicos:\n\n"
+    "Como excepción a lo anterior, cuando las comisiones giren sobre el "
+    "mayor descubierto, la tasa anual equivalente se obtendrá como "
+    "sumatorio de ambos conceptos».\n\n"
+    "7 «En caso de descubierto tácito importante que se prolongue "
+    "durante un período superior a un mes, el prestamista informará al "
+    "consumidor de los siguientes extremos:\n\n"
+    "- a) Del descubierto tácito.\n"
+    "- b) Del tipo deudor aplicable».\n")
+_R4_MD_FN_UNREF = (
+    "Los criterios para la repercusión de estos gastos son los "
+    "siguientes, según la práctica supervisora:\n\n"
+    "1 Resulta imprescindible su previsión y concreción en la "
+    "información precontractual.\n\n"
+    "2 Además, en dicha información se deberá recoger el importe "
+    "concreto de los gastos.\n")
+_R4_MD_FN_NONASC = (
+    "Se acreditará mediante lo previsto en el número 3 del artículo 3 "
+    "del RD-Ley 6/2012 6 .\n\n"
+    "6 «3 La concurrencia de las circunstancias se acreditará mediante "
+    "los siguientes documentos:\n\n"
+    "1 Certificado de rentas y, en su caso, del Impuesto de "
+    "Patrimonio.\n\n"
+    "2 Últimas tres nóminas percibidas.\n\n"
+    "1 Libro de familia o documento acreditativo de la pareja de "
+    "hecho».\n")
+_R4_MD_FN_VISION = (
+    "Texto del cuerpo con su referencia<sup>4</sup> en la página.\n\n"
+    "---\n\n"
+    "<sup>4</sup> El artículo 7.3 de la orden señala lo siguiente: «Los "
+    "documentos contractuales deberán recoger estos extremos».\n")
+
+
+def run_repair4_checks():
+    repair_mod, repair_err = try_import("repair")
+
+    def _need_repair(attr):
+        if repair_mod is None:
+            raise SkipCheck(f"repair not present: {repair_err}")
+        if not hasattr(repair_mod, attr):
+            raise SkipCheck(f"repair.{attr} not implemented")
+
+    def list_dedent_carry_attachment_stays_flat():
+        _need_repair("fix_list_structure")
+        # Fresh pipeline shape: the carry attachment and the dedent must
+        # cancel — a page-initial continuation paragraph ships FLAT, and
+        # the untouched page keeps its identity.
+        fixed, counts = repair_mod.fix_list_structure(
+            {1: _R4_MD_P1, 2: _R4_MD_P2},
+            {1: _R4_REF_P1, 2: _R4_REF_P2})
+        assert counts == {} and fixed[2] is _R4_MD_P2, f"counts={counts}"
+        # Previously-shipped shape: an already-indented page-leading
+        # paragraph (renders as a code block after the <!-- p.N -->
+        # anchor) must be dedented back to column 0.
+        fixed, counts = repair_mod.fix_list_structure(
+            {1: _R4_MD_P1, 2: _R4_MD_P2_INDENTED},
+            {1: _R4_REF_P1, 2: _R4_REF_P2})
+        assert counts.get(2), f"counts={counts}"
+        assert "\n\nEn el caso de girarse" in fixed[2], fixed[2][:80]
+        assert "\n    En el caso" not in fixed[2], fixed[2][:80]
+
+    def list_dedent_releveled_leading_bullets():
+        _need_repair("fix_list_structure")
+        # Class-C re-level whose level-0 item comes AFTER the page-top
+        # bullets: the bullets' new indent has no parent above in the
+        # chunk, so the leading run lands at column 0 while the parented
+        # sub-bullet below "- 3" keeps its nesting.
+        fixed, counts = repair_mod.fix_list_structure(
+            {1: _R4_MD_RELEVEL}, {1: _R4_REF_RELEVEL})
+        out = fixed[1]
+        assert out.startswith("- El canal empleado"), out[:40]
+        assert "\n- 3 Finalmente" in out, out
+        assert "\n    - Se deberá informar" in out, out
+        assert "\n    - El canal" not in out, out
+
+    def list_dedent_fence_and_parented_negatives():
+        _need_repair("fix_list_structure")
+        fixed, counts = repair_mod.fix_list_structure(
+            {1: _R4_MD_FENCE}, {1: _R4_REF_FENCE})
+        assert counts == {} and fixed[1] is _R4_MD_FENCE, f"counts={counts}"
+        md = ("- 3 Finalmente, de producirse el efectivo devengo de los "
+              "gastos:\n"
+              "    - Se deberá informar de estos con carácter previo a "
+              "su cargo.\n")
+        ref = ("  3     Finalmente, de producirse el efectivo devengo de "
+               "los gastos:\n\n"
+               "           • Se deberá informar de estos con carácter "
+               "previo a su cargo.\n")
+        fixed, counts = repair_mod.fix_list_structure({1: md}, {1: ref})
+        assert counts == {} and fixed[1] is md, f"counts={counts}"
+
+    def footnote_block_marked():
+        _need_repair("mark_footnote_blocks")
+        marked, n = repair_mod.mark_footnote_blocks(_R4_MD_FN)
+        assert n == 2, f"n={n}"
+        assert "\n---\n\n<sup>6</sup> «7 En  el  cálculo" in marked, marked
+        assert "\n<sup>7</sup> «En caso de descubierto" in marked, marked
+        assert "- a) Del descubierto tácito." in marked, marked
+        assert "de la Circular 5/2012 6 ." in marked, marked
+        again, n2 = repair_mod.mark_footnote_blocks(marked)
+        assert n2 == 0 and again == marked, f"second pass={n2}"
+
+    def footnote_block_gate_negatives():
+        _need_repair("mark_footnote_blocks")
+        for text in (_R4_MD_FN_UNREF, _R4_MD_FN_NONASC, _R4_MD_FN_VISION,
+                     _R2_TOC_CLEAN, SYNTHETIC_PROBE_SIMPLE_PAGES[1]):
+            fixed, n = repair_mod.mark_footnote_blocks(text)
+            assert n == 0 and fixed == text, (n, text[:50])
+
+    for name in REPAIR4_CHECKS:
+        run_check("repair4", name, locals()[name])
+
+
 # -------------------------------------------------------- end-to-end (e2e)
 
 E2E_CHECKS = [
@@ -866,6 +1052,7 @@ def main() -> None:
     run_verify_checks()
     run_repair2_checks()
     run_repair3_checks()
+    run_repair4_checks()
     run_report_checks()
     run_okf_checks()
     run_e2e_checks()

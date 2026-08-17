@@ -49,6 +49,7 @@ from repair import (  # noqa: E402
     drop_duplicate_orphans,
     fix_list_structure,
     fix_word_reversal,
+    mark_footnote_blocks,
     sanitize,
     strip_icon_glyphs,
 )
@@ -117,6 +118,12 @@ def convert(pdf_path: Path, *, no_vision: bool, verify_requested: bool,
     reference = reference_pages(str(working_pdf))
     pages_md, reversal_fixes = fix_word_reversal(pages_md, reference)
     pages_md, list_fixes = fix_list_structure(pages_md, reference)
+    footnote_marks: dict[int, int] = {}
+    for page in list(pages_md):
+        marked, n = mark_footnote_blocks(pages_md[page])
+        if n:
+            footnote_marks[page] = n
+            pages_md[page] = marked
     debris_removed: dict[int, int] = {}
     for page in list(pages_md):
         if page in ocr_pages:
@@ -141,6 +148,8 @@ def convert(pdf_path: Path, *, no_vision: bool, verify_requested: bool,
             history.append(f"repair:reversal({reversal_fixes[page]})")
         if list_fixes.get(page):
             history.append(f"repair:lists({list_fixes[page]})")
+        if footnote_marks.get(page):
+            history.append(f"repair:footnotes({footnote_marks[page]})")
         if debris_removed.get(page):
             history.append(f"repair:debris({debris_removed[page]})")
         if md and not (ocr_failed and page in ocr_pages):
