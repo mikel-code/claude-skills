@@ -279,6 +279,17 @@ plain digits; margin badge icons can leak short glyph runs ("CF") into
 adjacent paragraphs; the docling cell-reversal bug itself is upstream
 (worth reporting to docling with the reproducing document).
 
+**List-marker convention (user-ratified, 2026-08-17).** Markdown ordered
+lists only support plain integers — there is no syntax for compound
+markers (1.1, 2.3), roman numerals, or letters. The deliberate convention:
+printed markers that markdown cannot express stay in the item TEXT behind
+a bullet (`- 2.1 Explicaciones…`, `- i) Se deberá…`, `- a) Del
+descubierto…`). This keeps the printed identifier visible and searchable
+(body text cross-references sections as "epígrafe 2.1" / "apartado 7.e)"),
+at the cost of bullet glyphs on semantically-numbered lists. Do not
+"clean" these into positional `1.` markers — that destroys the citation
+anchors.
+
 **Third round (list structure + OCR scoping, 2026-08-17).** The biggest
 find was self-inflicted: an UNSCOPED `ocrmypdf --redo-ocr` pass rewrites
 born-digital pages, and tesseract overlay text coexisting with the real
