@@ -404,6 +404,125 @@ def run_okf_checks():
     run_check("okf", "okf_frontmatter_well_formed", okf_frontmatter_well_formed)
 
 
+# ----------------------------------------- repair2 (field-defect round 2)
+#
+# Regression checks for the second field-hardening round against
+# CCBPBAbril2026.md: icon-glyph junk (repair.strip_icon_glyphs), duplicate
+# orphan fragments (repair.drop_duplicate_orphans), and structural TOC
+# order detection (verify.toc_order_suspect). Fixture strings are verbatim
+# (abridged) excerpts of the real defect document.
+
+REPAIR2_CHECKS = [
+    "icon_glyphs_stripped",
+    "icon_glyphs_keep_negatives",
+    "duplicate_orphans_dropped",
+    "duplicate_orphans_keep_negatives",
+    "toc_order_suspect_positive_negative",
+]
+
+_R2_ICON_JUNK = (
+    "(Y La aplicación de estos principios de claridad y transparencia.\n\n"
+    "- (Y Cuando son varias las cuestiones controvertidas planteadas.\n\n"
+    "Y Así, a efectos de acreditar la realización de estas comunicaciones.\n\n"
+    "¡Y\n\nCÓ S\n\n"
+    "## ¡0 Se ha considerado, en los informes emitidos, que las entidades:\n"
+)
+_R2_ICON_KEEP = (
+    "## I Criterios de buenas prácticas aplicables\n\n"
+    "## A) Denegar su aplicación, de forma inmediata\n\n"
+    "TS Aquellas en las que se excluyen los beneficios del fiador.\n\n"
+    "«1 Los sujetos obligados identificarán a cuantas personas físicas.\n\n"
+    "- 1 Resulta imprescindible su previsión y concreción.\n\n"
+    "Y ello en razón de que no se precisa sino acreditar la aceptación.\n\n"
+    "EE. UU. La regulación aplicable difiere de la europea.\n\n19\n"
+)
+_R2_ORPHAN_FUSED = (
+    "entes extremos: 4 El artículo 7.3 de la orden señala lo siguiente: "
+    "«Los documentos contractuales deberán recoger de forma explícita y "
+    "clara los siguientes extremos:"
+)
+_R2_ORPHAN_TRUNC = (
+    "nás que establezca el  Banco de España». Los demás que establezca el "
+    "Banco de España»."
+)
+_R2_ORPHAN_KEEP = (
+    "Los demás que establezca el Banco de España». 5 La norma indica lo "
+    "siguiente: «Los demás que establezca el Banco de España»."
+)
+_R2_TOC_BROKEN = "\n".join(
+    ["- único 3.1 Identificador único 165",
+     "- de las transferencias 3.2 Irrevocabilidad de las transferencias 167",
+     "- y gastos de las operaciones 3.3 Comisiones y gastos 167",
+     "- de órdenes de pago 3.4 Recepción de órdenes de pago 169",
+     "- de abono 3.5 Fecha de abono 169",
+     "- amediatos 3.6 Pagos inmediatos 170",
+     "- um 3.6.1 Bizum 170",
+     "- transferencias 3.8 Límites de transferencias 173",
+     "- generales 4.1 Consideraciones generales 175"])
+_R2_TOC_CLEAN = "\n".join(
+    [f"- 2.{i} Entrada de prueba número {i} {60 + i}" for i in range(1, 10)])
+
+
+def run_repair2_checks():
+    repair_mod, repair_err = try_import("repair")
+    verify_mod, verify_err = try_import("verify")
+
+    def icon_glyphs_stripped():
+        if repair_mod is None:
+            raise SkipCheck(f"repair not present: {repair_err}")
+        if not hasattr(repair_mod, "strip_icon_glyphs"):
+            raise SkipCheck("repair.strip_icon_glyphs not implemented")
+        cleaned, n = repair_mod.strip_icon_glyphs(_R2_ICON_JUNK)
+        assert n == 6, f"expected 6 strips, got {n}"
+        assert cleaned.startswith("La aplicación"), cleaned[:40]
+        assert "- Cuando son varias" in cleaned
+        assert "\nAsí, a efectos" in cleaned
+        assert "## Se ha considerado" in cleaned
+        assert "¡Y" not in cleaned and "CÓ S" not in cleaned
+
+    def icon_glyphs_keep_negatives():
+        if repair_mod is None:
+            raise SkipCheck(f"repair not present: {repair_err}")
+        if not hasattr(repair_mod, "strip_icon_glyphs"):
+            raise SkipCheck("repair.strip_icon_glyphs not implemented")
+        kept, n = repair_mod.strip_icon_glyphs(_R2_ICON_KEEP)
+        assert n == 0 and kept == _R2_ICON_KEEP, f"stripped={n}"
+
+    def duplicate_orphans_dropped():
+        if repair_mod is None:
+            raise SkipCheck(f"repair not present: {repair_err}")
+        if not hasattr(repair_mod, "drop_duplicate_orphans"):
+            raise SkipCheck("repair.drop_duplicate_orphans not implemented")
+        fixed, n = repair_mod.drop_duplicate_orphans(_R2_ORPHAN_FUSED)
+        assert n == 1 and fixed.startswith("4 El artículo 7.3"), (n, fixed[:40])
+        fixed, n = repair_mod.drop_duplicate_orphans(_R2_ORPHAN_TRUNC)
+        assert n == 1 and fixed == (
+            "Los demás que establezca el Banco de España»."), (n, fixed)
+
+    def duplicate_orphans_keep_negatives():
+        if repair_mod is None:
+            raise SkipCheck(f"repair not present: {repair_err}")
+        if not hasattr(repair_mod, "drop_duplicate_orphans"):
+            raise SkipCheck("repair.drop_duplicate_orphans not implemented")
+        kept, n = repair_mod.drop_duplicate_orphans(_R2_ORPHAN_KEEP)
+        assert n == 0 and kept == _R2_ORPHAN_KEEP, f"dropped={n}"
+
+    def toc_order_suspect_positive_negative():
+        if verify_mod is None:
+            raise SkipCheck(f"verify not present: {verify_err}")
+        if not hasattr(verify_mod, "toc_order_suspect"):
+            raise SkipCheck("verify.toc_order_suspect not implemented")
+        assert verify_mod.toc_order_suspect(_R2_TOC_BROKEN), (
+            "broken TOC excerpt not suspect")
+        assert not verify_mod.toc_order_suspect(_R2_TOC_CLEAN), (
+            "clean TOC excerpt wrongly suspect")
+        assert not verify_mod.toc_order_suspect(
+            SYNTHETIC_PROBE_SIMPLE_PAGES[1]), "prose page wrongly suspect"
+
+    for name in REPAIR2_CHECKS:
+        run_check("repair2", name, locals()[name])
+
+
 # -------------------------------------------------------- end-to-end (e2e)
 
 E2E_CHECKS = [
@@ -567,6 +686,7 @@ def main() -> None:
     run_extract_checks()
     run_ocr_checks()
     run_verify_checks()
+    run_repair2_checks()
     run_report_checks()
     run_okf_checks()
     run_e2e_checks()

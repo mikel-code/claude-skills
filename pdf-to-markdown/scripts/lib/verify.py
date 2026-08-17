@@ -85,9 +85,18 @@ ORDER_THRESHOLD = 0.75 (see the constant's own comment for the full writeup)
 was picked empirically against a real 423-page document: docling's
 word-reversed table-cell pages scored bigram 0.69/0.71, cleanly below every
 sampled good page (prose and ruled-table alike, floor 0.81); that document's
-TOC page-level reordering scored 0.81-0.92, overlapping the good range, so it
-is a documented residual false-negative rather than a threshold miss — no
-single global threshold catches both without flagging clean tables. Bigram is
+TOC page-level reordering scored 0.81-0.92, overlapping the good range — no
+single global threshold catches both without flagging clean tables. That TOC
+class is therefore caught by a THIRD, structural signal layered on top:
+toc_order_suspect() recognizes TOC-shaped pages whose entry structure is
+broken (orphan-prefixed entries, missing page-number tails, bare-number
+orphan lines, non-monotonic page numbers) and promotes them to order_flagged
+regardless of bigram score. Layering: pages already `flagged` for missing
+content are not additionally order-flagged, and recall-None (unverifiable)
+pages stay unflagged; unlike the bigram signal it does NOT require unigram
+to pass the threshold — the field document's page 8 sits at unigram 0.81,
+excused by the spillover tolerance, which would block the bigram path
+entirely, and the structural evidence is self-contained anyway. Bigram is
 None exactly when unigram is None (nothing to cross-check either way); the
 vacuous case of a one-token reference page (no possible bigram) scores
 bigram 1.0, not None — it cannot be evidence of scrambling.
@@ -139,13 +148,103 @@ FALLBACK_MIN_LEN = 5   # joined-stream substring fallback needs length to be saf
 # slightly toward not false-flagging clean tables since that failure mode is
 # the one explicitly ruled out.
 #
-# Residual risk: page-level/entry-level reordering that leaves most
-# individual lines internally intact (this document's TOC bug) is NOT
-# reliably caught by this metric at this threshold — 12/12 of the sampled
-# TOC pages score above 0.75 and stay order_flagged=False. Catching that
-# class would need a different signal (e.g. TOC-specific entry-number
-# monotonicity), out of scope here.
+# Residual risk (now mitigated): page-level/entry-level reordering that
+# leaves most individual lines internally intact (this document's TOC bug)
+# is NOT reliably caught by this metric at this threshold — the sampled
+# TOC pages score 0.81-0.92 and stay below-radar on bigram alone. That
+# class is caught by the STRUCTURAL signal below (toc_order_suspect),
+# layered into verify() alongside the bigram check.
 ORDER_THRESHOLD = 0.75
+
+# ------------------------------------------------- TOC structural signal
+#
+# toc_order_suspect(): the field document's TOC pages defeated the bigram
+# metric (0.81-0.92 vs threshold 0.75, which cannot rise without
+# false-flagging clean ruled-table pages — see ORDER_THRESHOLD writeup).
+# The catchable difference is STRUCTURE, not token order: a healthy TOC
+# entry is "- <secnum> <title> <pagenum>" (vision-fixed pages 5-7/10/11/
+# 13/14 of the field document all have this shape), while the scrambled
+# extraction emits entries with an orphan fragment fused BEFORE the
+# section number ("- único 3.1 Identificador único 165"), entries missing
+# the page-number tail, bare-number orphan entries ("- 37 38"), or
+# out-of-order page-number tails. Gate first (>= TOC_MIN_ENTRIES list
+# lines ending in a bare page number → the page is TOC-like at all; prose
+# and ordinary list pages never qualify), then flag on any structural
+# break. Thresholds tuned on the field document: broken page 8 scores
+# orphan-prefix fraction 0.71; every clean vision-fixed TOC page scores 0
+# on all signals.
+
+TOC_MIN_ENTRIES = 8        # list lines with page-number tails => TOC-like
+TOC_BROKEN_FRAC = 0.20     # fraction of broken entries that flags
+TOC_BARE_NUMBER_MIN = 2    # "- 37 38" orphan lines that flag
+TOC_INVERSION_MIN = 2      # page-number tail order inversions that flag
+
+_TOC_LIST_RE = re.compile(r"^\s*[-*+]\s+(\S.*)$")
+_TOC_PAGENUM_TAIL_RE = re.compile(r"\s(\d{1,4})$")
+_TOC_SECNUM_RE = re.compile(r"^\d{1,2}(?:\.\d{1,2}){0,5}$")
+_TOC_MID_SECNUM_RE = re.compile(r"\s\d{1,2}(?:\.\d{1,2}){1,5}\s")
+_TOC_BARE_NUMBERS_RE = re.compile(r"^\d{1,4}(?:\s+\d{1,4})+$")
+_TOC_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(\d[\w.]*\s+\S.*)$")
+
+
+def toc_order_suspect(markdown: str) -> bool:
+    """True when this page's markdown is a TOC whose entry structure is
+    broken — the reordered-TOC shape the bigram metric cannot see.
+
+    Purely structural, no reference needed. A page is TOC-like when at
+    least TOC_MIN_ENTRIES list lines end in a bare page number (or are
+    bare-number orphans); among TOC-like pages, suspect when any holds:
+      * >= TOC_BROKEN_FRAC of entries carry an orphan prefix — the entry
+        does not START with a section number yet contains a dotted section
+        number mid-line ("- único 3.1 Identificador único 165");
+      * >= TOC_BROKEN_FRAC of entries lack the page-number tail entirely;
+      * >= TOC_BARE_NUMBER_MIN bare-number orphan entries ("- 37 38");
+      * >= TOC_INVERSION_MIN inversions in the sequence of page-number
+        tails (a real TOC's page numbers are monotonic; one-off quirks
+        such as an annex restart are tolerated below the minimum).
+    Clean TOCs (all entries "- <secnum> <title> <pagenum>", tails
+    monotonic) and non-TOC pages always return False.
+    """
+    entries: list[str] = []          # list-item bodies
+    tails: list[int] = []            # page-number tails, in order
+    bare_number_lines = 0
+    for line in markdown.split("\n"):
+        m = _TOC_LIST_RE.match(line)
+        if m:
+            body = m.group(1).strip()
+            if _TOC_BARE_NUMBERS_RE.match(body):
+                bare_number_lines += 1
+                continue
+            entries.append(body)
+            tm = _TOC_PAGENUM_TAIL_RE.search(body)
+            if tm:
+                tails.append(int(tm.group(1)))
+            continue
+        hm = _TOC_HEADING_RE.match(line)
+        if hm:
+            tm = _TOC_PAGENUM_TAIL_RE.search(hm.group(1).strip())
+            if tm:
+                tails.append(int(tm.group(1)))
+    if len(tails) + bare_number_lines < TOC_MIN_ENTRIES:
+        return False                 # not TOC-like: never suspect
+    if bare_number_lines >= TOC_BARE_NUMBER_MIN:
+        return True
+    broken_prefix = missing_tail = 0
+    for body in entries:
+        has_tail = bool(_TOC_PAGENUM_TAIL_RE.search(body))
+        if not has_tail:
+            missing_tail += 1
+        first = body.split(None, 1)[0]
+        if (not _TOC_SECNUM_RE.match(first)
+                and _TOC_MID_SECNUM_RE.search(f" {body} ")):
+            broken_prefix += 1
+    n = len(entries)
+    if n and broken_prefix / n >= TOC_BROKEN_FRAC:
+        return True
+    if n and missing_tail / n >= TOC_BROKEN_FRAC:
+        return True
+    inversions = sum(1 for a, b in zip(tails, tails[1:]) if b < a)
+    return inversions >= TOC_INVERSION_MIN
 
 # Numbers first so "1.2" / "1,204" survive as one token instead of shattering
 # into single digits that the min-length rule would then drop.
@@ -348,6 +447,24 @@ def verify(pdf_path: str, pages: dict[int, str],
         if recall[p] is not None and recall[p] >= threshold
         and bigram[p] is not None and bigram[p] < ORDER_THRESHOLD
     ]
+    # Second order signal, same layering: TOC-shaped pages whose entry
+    # STRUCTURE is broken join order_flagged regardless of bigram score —
+    # the field document's reordered TOC pages score bigram 0.81-0.92
+    # (inside the clean-table range, see ORDER_THRESHOLD writeup), so no
+    # bigram threshold can catch them without false-flagging clean tables.
+    # toc_order_suspect is structural and needs no reference, so unlike the
+    # bigram path it does NOT require unigram >= threshold (the field
+    # document's broken TOC page sits at unigram 0.81, excused by the
+    # spillover retry — requiring the threshold would silence the signal).
+    # The rest of the contract's layering still applies: a page already
+    # `flagged` for missing content is not additionally order-flagged, and
+    # recall-None (unverifiable) pages stay unflagged per the contract rule.
+    for p in sorted(pages):
+        if p in flagged or p in order_flagged or recall[p] is None:
+            continue
+        if toc_order_suspect(pages[p]):
+            order_flagged.append(p)
+    order_flagged.sort()
     return VerifyResult(
         recall=recall, flagged=flagged, threshold=threshold,
         bigram=bigram, order_flagged=order_flagged,
@@ -355,6 +472,61 @@ def verify(pdf_path: str, pages: dict[int, str],
 
 
 # ---------------------------------------------------------------- self-test
+
+# Verbatim excerpts from the field document (CCBPBAbril2026.md). Broken:
+# extracted TOC page 8 — entries carry orphan fragments fused before the
+# section number. Clean: vision-fixed TOC page 6 — canonical
+# "- <secnum> <title> <pagenum>" shape.
+_TOC_BROKEN = """\
+## 3 Transferencias 164
+
+- único 3.1 Identificador único 165
+- de  las transferencias 3.2 Irrevocabilidad de las transferencias 167
+- y  gastos de las  operaciones 3.3 Comisiones y gastos de las operaciones de pago 167
+- de órdenes de pago 3.4 Recepción de órdenes de pago 169
+- de abono 3.5 Fecha de abono 169
+- amediatos 3.6 Pagos inmediatos 170
+- um 3.6.1  Bizum 170
+- transferencias 3.8 Límites de transferencias 173
+
+## 4 Adeudos domiciliados 175
+
+- generales 4.1 Consideraciones generales 175
+- de adeudos domiciliados 4.2 Tipología de adeudos domiciliados 175
+- e domiciliación o  mandato 4.3 Orden de domiciliación o mandato 176
+- domiciliado básico SEPA 4.4 Adeudo domiciliado básico SEPA 176
+"""
+
+_TOC_CLEAN = """\
+## 2 CUENTAS DE PAGO O A LA VISTA. CUENTAS DE PAGO BÁSICAS
+
+- 1 Cuestiones generales 60
+- 2 Apertura de cuentas de pago. Obligaciones derivadas de la normativa de transparencia 61
+- 2.1 Explicaciones adecuadas 62
+- 2.2 Información precontractual 62
+- 2.2.1 Documento informativo de las comisiones. Comparador de comisiones de cuentas de pago 63
+- 2.2.2 Servicios vinculados a la cuenta 64
+- 2.3 Formalización del contrato 64
+- 2.3.1 Cuentas en divisas 65
+- 3 Disposición de fondos 67
+- 3.1 Disposiciones en efectivo 67
+- 3.2 Adeudos sin orden firmada del cliente 68
+- 3.3 Cargos por retribuciones en especie (regalos promocionales y otros) 69
+"""
+
+# Ordinary numbered/bulleted list page (field-document footnote style):
+# list lines, but no page-number tails — must never be TOC-like.
+_LIST_NOT_TOC = """\
+- 1 Resulta imprescindible su previsión y concreción en la información precontractual y en los propios contratos bancarios.
+- 2 Además, en dicha información se deberá recoger lo siguiente:
+- El importe concreto de los gastos que se han de repercutir.
+- El canal empleado para efectuar las comunicaciones.
+- 19 En este sentido, se considera contrario a las buenas prácticas.
+- STS n.º 705, de 15 de diciembre de 2015, que declaró la nulidad de la cláusula.
+- STS n.º 457, de 24 de julio de 2020, que confirmó la partición de los gastos.
+- STS n.º 555, de 26 de octubre de 2020, sobre los gastos de gestoría.
+- STS n.º 35, de 27 de enero de 2021, sobre los gastos de tasación.
+"""
 
 if __name__ == "__main__":
     fixtures = SCRIPT_DIR.parent.parent / "tests" / "fixtures"
@@ -467,6 +639,55 @@ if __name__ == "__main__":
           f"bigram={r.bigram[1]} order_flagged={r.order_flagged}")
     check("page 2 not order_flagged", 2 not in r.order_flagged,
           f"bigram={r.bigram[2]} order_flagged={r.order_flagged}")
+
+    # 9. toc_order_suspect on real field-document TOC excerpts.
+    print("case 9: toc_order_suspect structural signal")
+    check("broken extracted TOC (orphan-prefixed entries) is suspect",
+          toc_order_suspect(_TOC_BROKEN), "expected True")
+    check("clean vision-fixed TOC is not suspect",
+          not toc_order_suspect(_TOC_CLEAN), "expected False")
+    check("ordinary numbered-list page is not TOC-like",
+          not toc_order_suspect(_LIST_NOT_TOC), "expected False")
+    check("plain prose page is not TOC-like",
+          not toc_order_suspect(ref[0]), "expected False")
+    bare = _TOC_CLEAN + "\n- 37 38\n- 41 42\n"
+    check("bare-number orphan entries flag a TOC page",
+          toc_order_suspect(bare), "expected True")
+    shuffled = "\n".join(
+        [f"- {i} Entrada de prueba {p}" for i, p in
+         enumerate([60, 74, 62, 71, 64, 69, 65, 67, 68, 66], start=1)])
+    check("non-monotonic page-number tails flag a TOC page",
+          toc_order_suspect(shuffled), "expected True")
+    missing = "\n".join(
+        [f"- {i} Entrada de prueba {50 + i}" for i in range(1, 9)]
+        + ["- ctual  y prácticas previas 1.1",
+           "- otra entrada truncada sin número 2.3"])
+    check("missing page-number tails flag a TOC page",
+          toc_order_suspect(missing), "expected True")
+
+    # 10. verify() wiring: a page whose markdown contains a structurally
+    # broken TOC joins order_flagged even though its bigram recall is
+    # perfect (the field failure mode: TOC pages scored bigram 0.81-0.92,
+    # above ORDER_THRESHOLD). Reference recall is unaffected by the extra
+    # markdown (recall only asks "is reference text missing?"), so the page
+    # passes unigram — the structural signal alone must promote it.
+    print("case 10: verify() wires TOC suspicion into order_flagged")
+    r = verify(simple, {1: ref[0] + "\n" + _TOC_BROKEN, 2: ref[1]})
+    check("page 1 passes unigram", 1 not in r.flagged,
+          f"recall={r.recall[1]}")
+    check("page 1 bigram is above ORDER_THRESHOLD (bigram alone missed it)",
+          r.bigram[1] is not None and r.bigram[1] >= ORDER_THRESHOLD,
+          f"bigram={r.bigram[1]}")
+    check("page 1 order_flagged via TOC structure", 1 in r.order_flagged,
+          f"order_flagged={r.order_flagged}")
+    check("page 2 untouched", 2 not in r.order_flagged,
+          f"order_flagged={r.order_flagged}")
+
+    # 11. Clean TOC through the same wiring: no flag.
+    print("case 11: clean TOC page does not order-flag")
+    r = verify(simple, {1: ref[0] + "\n" + _TOC_CLEAN, 2: ref[1]})
+    check("page 1 not order_flagged", 1 not in r.order_flagged,
+          f"order_flagged={r.order_flagged}")
 
     if failures:
         print(f"\n{failures} self-test check(s) FAILED")

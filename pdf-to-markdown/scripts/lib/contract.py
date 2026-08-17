@@ -167,6 +167,16 @@ class VerifyResult:
 #              clean_ocr_debris(markdown: str) -> tuple[str, int]
 #                  # drop OCR-noise fragment lines (photo-page tesseract
 #                  # debris); returns (markdown, lines_removed)
+#              strip_icon_glyphs(markdown: str) -> tuple[str, int]
+#                  # remove margin-badge icon glyphs misread as text
+#                  # (standalone or paragraph-leading uppercase/symbol runs)
+#              drop_duplicate_orphans(markdown: str) -> tuple[str, int]
+#                  # remove wrapped-line fragments duplicated before their
+#                  # full line (footnote/TOC reordering artifacts); only on
+#                  # provable (truncation-tolerant) substring duplicates
+# verify.py    toc_order_suspect(markdown: str) -> bool
+#                  # TOC-shaped page with broken entry structure — feeds
+#                  # order_flagged inside verify() regardless of bigram
 # report.py    build_report(records: list[PageRecord], *, pdf_path: str,
 #                           route: DocRoute) -> dict       # JSON report
 #              render_report(report: dict) -> str          # human summary

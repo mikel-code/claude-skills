@@ -43,7 +43,13 @@ from deps import check_deps  # noqa: E402
 from extract import extract  # noqa: E402
 from ocr import run_ocr  # noqa: E402
 from okf import okf_frontmatter  # noqa: E402
-from repair import clean_ocr_debris, fix_word_reversal, sanitize  # noqa: E402
+from repair import (  # noqa: E402
+    clean_ocr_debris,
+    drop_duplicate_orphans,
+    fix_word_reversal,
+    sanitize,
+    strip_icon_glyphs,
+)
 from report import assert_complete, build_report, render_report  # noqa: E402
 from triage import triage  # noqa: E402
 from verify import reference_pages, verify  # noqa: E402
@@ -90,6 +96,16 @@ def convert(pdf_path: Path, *, no_vision: bool, verify_requested: bool,
     # filtering on OCR'd pages. All happen BEFORE verification so the
     # recall/bigram metrics measure what actually ships.
     pages_md = {p: sanitize(m) for p, m in ext.pages.items() if m}
+    glyph_strips: dict[int, int] = {}
+    orphan_drops: dict[int, int] = {}
+    for page in list(pages_md):
+        md_txt, n_glyphs = strip_icon_glyphs(pages_md[page])
+        md_txt, n_orphans = drop_duplicate_orphans(md_txt)
+        if n_glyphs:
+            glyph_strips[page] = n_glyphs
+        if n_orphans:
+            orphan_drops[page] = n_orphans
+        pages_md[page] = md_txt
     reference = reference_pages(str(working_pdf))
     pages_md, reversal_fixes = fix_word_reversal(pages_md, reference)
     debris_removed: dict[int, int] = {}
@@ -108,6 +124,10 @@ def convert(pdf_path: Path, *, no_vision: bool, verify_requested: bool,
         history = ["triage", f"extract:{tri.route.value}"]
         if page in ocr_pages and tri.ocr_mode is not None:
             history.insert(1, f"ocr:{tri.ocr_mode.value}")
+        if glyph_strips.get(page):
+            history.append(f"repair:glyphs({glyph_strips[page]})")
+        if orphan_drops.get(page):
+            history.append(f"repair:orphans({orphan_drops[page]})")
         if reversal_fixes.get(page):
             history.append(f"repair:reversal({reversal_fixes[page]})")
         if debris_removed.get(page):

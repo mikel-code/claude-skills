@@ -1,6 +1,6 @@
 """Deterministic text repair (contract: repair.py signature block).
 
-Three pure functions fixing defect classes CONFIRMED on a real document
+Five pure functions fixing defect classes CONFIRMED on a real document
 (CCBPBAbril2026.pdf, Banco de España, 424 pp — docling route + tesseract OCR
 on decorative pages). Each repair is deterministic and evidence-gated: no
 model calls, no guessing. Anything not provably broken is left byte-identical.
@@ -115,6 +115,80 @@ model calls, no guessing. Anything not provably broken is left byte-identical.
    A removed line takes one adjacent blank line with it, so the block
    collapses cleanly instead of leaving stacked blanks. Returns
    (markdown, debris_lines_removed) — blank lines are not counted.
+
+4. strip_icon_glyphs(markdown) — margin badge icons read as text.
+   The source document decorates paragraphs with margin badge icons whose
+   glyphs docling reads as short letter runs. Confirmed forms: "(Y " / "¡0 "
+   / bare "Y " / "¡US " / "LJ " / "DA " prefixing paragraphs, list items and
+   headings ("## ¡0 Se ha considerado…"), and standalone lines "¡Y", "(Y",
+   "¡0", "CÓ S". Generic junk-token shape: 1-4 chars, NO lowercase, drawn
+   from uppercase (incl. accented) letters / digits / ¡!()§, stripped only
+   when (a) the token is an entire standalone line, or (b) it leads a
+   paragraph / list item / heading and is followed by one space and an
+   uppercase/¡/«-initial word (junk always precedes a fresh sentence; real
+   abbreviations are near-always mid-sentence or followed by lowercase or
+   punctuation — "EE. UU." never matches because the token must be followed
+   by a space, not a period). Keep-guards, each confirmed against real
+   usages in the field document:
+     G1 allowlist of Spanish banking/legal abbreviations (UE, BCE, TAE, TS,
+        DNI, SMS, ICO, B2B, STS, FEIN, …) — "TS Aquellas en las que…" is a
+        known junk-prefix false negative kept BY DESIGN via this guard;
+     G2 pure roman-numeral tokens ("## I Criterios…", "## II …" are real
+        heading numbers);
+     G3 pure digits ("- 1 Resulta…" numbered footnotes/items; standalone
+        "19"/"416" page numbers);
+     G4 tokens containing «» (real case: «1 Los sujetos obligados…» opens a
+        QUOTED article — « + article number is content, never junk) or ")"
+        ("## A) Denegar…" enumerations);
+     G5 single-letter tokens are never stripped EXCEPT "Y" (below) — "E",
+        "A", "O" are real Spanish words and appear in mangled-but-real
+        lines;
+     G6 bare "Y" is a real conjunction: it is stripped ONLY at
+        paragraph/list start, followed by a CAPITALIZED word (Spanish
+        orthography never capitalizes after a mid-sentence "Y" except
+        proper nouns) whose lowercase form is additionally in a
+        function-word/sentence-starter set ("Y Así,…", "Y Sin perjuicio…")
+        — "Y María…" (proper noun) survives. If in doubt "Y" stays;
+     G7 standalone lines keep any line with an allowlisted or roman token,
+        or with no letter/¡ at all (pure digits/punct — page numbers);
+     G8 fenced code, table rows, blockquotes and HTML lines are never
+        touched.
+   Known residuals (documented, not bugs): "HORSES" standalone lines
+   (6 chars, over the 1-4 generic bound) and "E TI z …" (single-letter
+   token, G5) are left for clean_ocr_debris/vision.
+
+5. drop_duplicate_orphans(markdown) — wrapped-line reordering fragments.
+   A fragment of a line is emitted BEFORE the full line: standalone, or
+   fused onto the start of the very line (usually a footnote) that contains
+   the full text, often truncated mid-word ("entes extremos:" from
+   "…siguientes extremos:"; "5 de diciembre…" from "15 de diciembre…";
+   "TS de 16…" from "STS de 16…"). Never fuzzy: a prefix/line F is dropped
+   only when F itself — whitespace-normalized, case-sensitive, optionally
+   minus its first 1-3 characters — reappears as a substring of the rest of
+   the same line or the next non-empty line. Split candidates within a
+   line: positions after sentence-final punctuation ([.:;»!?] + space +
+   uppercase/«/¡/digit) and footnote-marker starts (1-2 digit number +
+   space + uppercase/«, the number not glued to a bigger number/date).
+   Junk gates (ALL required):
+     * normalized F is 12-200 chars (a wrapped-line fragment, not a
+       paragraph); truncated forms must keep >= 10 chars;
+     * the reappearance must be PROVABLY a tail of a longer run: either the
+       match is word-glued (immediately preceded by a word character —
+       "sigui|entes", "1|5 de", "S|TS", "dem|ás" after truncation) or, for
+       the untruncated form only, F starts with a lowercase letter (a
+       sentence fragment — "sin demora de los siguientes extremos:" — since
+       real sentences start uppercase). Truncated forms (t>0) are tried
+       only when the untruncated F does not appear at all, and always
+       require the glued match — otherwise any legitimately-quoted sentence
+       would strip via its own 1-char truncation;
+     * only plain text lines: headings, list items, table rows,
+       blockquotes, HTML and fenced code are never candidates (broken TOC
+       entries are verify.toc_order_suspect's job, not a repair).
+   A legitimate quotation ("Los demás que establezca el Banco de España».
+   5 La norma dice: «Los demás…»") fails both branches: it starts
+   uppercase and its match starts at a «/space boundary, not word-glued.
+   Returns (markdown, fragments_dropped); a dropped standalone line takes
+   one adjacent blank line with it.
 
 Stdlib only; imports contract only (per module rules). Self-test:
 `uv run repair.py` — fixtures are verbatim excerpts of the real document's
@@ -429,6 +503,271 @@ def clean_ocr_debris(markdown: str) -> tuple[str, int]:
     return "\n".join(out), removed
 
 
+# ------------------------------------------------------------- icon glyphs
+
+# Junk-token alphabet: uppercase (incl. accented) letters, digits, ¡!()§.
+# «» are deliberately NOT strippable (guard G4: «1 opens quoted article
+# text in the real document); ")" is likewise excluded via a guard so "A)"
+# enumerations survive.
+_ICON_CHARS = "A-ZÁÉÍÓÚÑÜ0-9¡!()§"
+_ICON_PREFIX_RE = re.compile(
+    rf"^([{_ICON_CHARS}]{{1,4}}) (?=[A-ZÁÉÍÓÚÑÜ¡«])"
+)
+_ICON_LINE_RE = re.compile(rf"^[{_ICON_CHARS} ]{{1,4}}$")
+_ICON_LINE_PREFIX_RE = re.compile(r"^(\s{0,3}#{1,6}\s+|\s*[-*+]\s+)?")
+_ROMAN_RE = re.compile(r"^[IVXLCDM]+$")
+_HAS_LETTERISH_RE = re.compile(r"[A-ZÁÉÍÓÚÑÜ¡]")
+
+# G1: real Spanish banking/legal abbreviations that can plausibly lead a
+# sentence — never stripped even when every other junk gate matches.
+_ABBREV_ALLOW = {
+    "EE", "UU", "UE", "CE", "BCE", "BE", "BDE", "TS", "TC", "AN", "AP",
+    "STS", "TJUE", "TAE", "TIN", "TEDR", "DNI", "NIF", "NIE", "SMS",
+    "PIN", "BIC", "CBP", "FEIN", "FIAE", "ICO", "BOE", "SEPA", "B2B",
+    "RD", "RDL", "OM", "IVA", "IAJD", "FGD", "CNMV", "AEAT", "PSD2",
+    "EUR", "USD", "GBP", "TFUE", "LCCI", "LSP",
+}
+
+# G6: bare "Y" is stripped only when the following capitalized word is a
+# common Spanish function/sentence-starter word (lowercased) — this is the
+# conservative gate that lets "Y Así, …" strip while "Y María …" (proper
+# noun after a real conjunction) survives.
+_ES_SENTENCE_STARTERS = {
+    "a", "ahora", "al", "ante", "aquellas", "aquellos", "asimismo", "así",
+    "aunque", "cabe", "como", "con", "consecuentemente",
+    "consiguientemente", "cual", "cualquier", "cuando", "dado", "de",
+    "del", "dicha", "dicho", "el", "ella", "ello", "en", "entendemos",
+    "entre", "es", "esta", "estas", "este", "estos", "finalmente",
+    "hemos", "igualmente", "la", "las", "lo", "los", "no", "nos", "para",
+    "por", "respecto", "resulta", "se", "según", "si", "sin", "sobre",
+    "también", "toda", "todas", "todo", "todos", "tras", "un", "una",
+    "ya",
+}
+
+
+def _icon_token_keeps(token: str) -> bool:
+    """True when a candidate junk token must be KEPT (guards G1-G5)."""
+    if token in _ABBREV_ALLOW:                     # G1
+        return True
+    if _ROMAN_RE.match(token):                     # G2: I, II, IV, …
+        return True
+    if token.isdigit():                            # G3
+        return True
+    if ")" in token or "«" in token or "»" in token:  # G4
+        return True
+    if not _HAS_LETTERISH_RE.search(token):        # digits+punct only
+        return True
+    return False
+
+
+def strip_icon_glyphs(markdown: str) -> tuple[str, int]:
+    """Remove margin-badge icon glyphs docling read as text.
+
+    Two shapes (module doc, item 4): whole standalone junk lines, and junk
+    tokens leading a paragraph / list item / heading followed by a fresh
+    capitalized sentence. Returns (markdown, tokens_stripped); a removed
+    standalone line takes one adjacent blank line with it.
+    """
+    lines = markdown.split("\n")
+    out: list[str] = []
+    stripped = 0
+    in_fence = False
+    skip_next_blank = False
+    for line in lines:
+        if _FENCE_RE.match(line):                  # G8
+            in_fence = not in_fence
+            out.append(line)
+            skip_next_blank = False
+            continue
+        if in_fence:
+            out.append(line)
+            continue
+        if skip_next_blank and not line.strip() and out and not out[-1].strip():
+            skip_next_blank = False
+            continue
+        skip_next_blank = False
+        s = line.strip()
+        if not s or s.startswith(("|", ">", "<")):  # G8
+            out.append(line)
+            continue
+        # Shape (a): the whole line is a junk token run ("¡Y", "CÓ S").
+        if _ICON_LINE_RE.match(s):
+            tokens = s.split()
+            if (
+                _HAS_LETTERISH_RE.search(s)        # G7: pure digits stay
+                and not any(t in _ABBREV_ALLOW or _ROMAN_RE.match(t)
+                            for t in tokens)       # G7
+            ):
+                stripped += 1
+                skip_next_blank = True
+                continue
+            out.append(line)
+            continue
+        # Shape (b): junk token leading a paragraph / list item / heading.
+        prefix = _ICON_LINE_PREFIX_RE.match(line).group(0)
+        seg = line[len(prefix):]
+        m = _ICON_PREFIX_RE.match(seg)
+        if m:
+            token = m.group(1)
+            keep = _icon_token_keeps(token)
+            if not keep and len(token) == 1:       # G5/G6
+                if token != "Y":
+                    keep = True
+                else:
+                    rest_words = seg[m.end():].split()
+                    nxt = rest_words[0].strip(".,;:()!?¡¿«»") if rest_words else ""
+                    keep = nxt.lower() not in _ES_SENTENCE_STARTERS
+            if not keep:
+                out.append(prefix + seg[m.end():])
+                stripped += 1
+                continue
+        out.append(line)
+    return "\n".join(out), stripped
+
+
+# ----------------------------------------------------- duplicate orphans
+
+ORPHAN_MIN_LEN = 12    # normalized fragment floor (full form)
+ORPHAN_TRUNC_MIN = 10  # floor after 1-3-char truncation
+ORPHAN_MAX_LEN = 200   # a fragment is one wrapped line, never a paragraph
+ORPHAN_MAX_TRUNC = 3   # chars the fragment may have lost at its start
+
+# Footnote marker: standalone 1-2 digit number + space + uppercase/«¡ —
+# the number must not be glued to a larger number/date ("1998 y", "5/2012").
+_FOOT_MARKER_RE = re.compile(
+    r"(?<![\d.,/§º°-])\d{1,2}[ \t\xa0]+(?=[A-ZÁÉÍÓÚÑÜ«¡])"
+)
+# Sentence boundary usable as a fragment/real-content split point.
+_SENT_BOUND_RE = re.compile(r"[.:;»!?…][ \t\xa0]+(?=[A-ZÁÉÍÓÚÑÜ«¡\d])")
+# NBSP included: the field document mixes \xa0 into otherwise-plain runs
+# ("artículo\xa07.3"), and whitespace flavor must not defeat the
+# exact-substring duplicate gate.
+_WS_RUN_RE = re.compile(r"[ \t\xa0]+")
+_WORD_CHAR_RE = re.compile(r"\w")
+
+
+def _norm_ws(text: str) -> str:
+    return _WS_RUN_RE.sub(" ", text.strip())
+
+
+def _glued_occurrence(frag: str, target: str) -> bool:
+    """True if frag occurs in target immediately preceded by a word char
+    (i.e. provably the tail of a longer run: "sigui|entes …")."""
+    start = 0
+    while True:
+        i = target.find(frag, start)
+        if i < 0:
+            return False
+        if i > 0 and _WORD_CHAR_RE.match(target[i - 1]):
+            return True
+        start = i + 1
+
+
+def _is_duplicate_fragment(frag: str, *targets: str) -> bool:
+    """Module-doc item 5 gates: frag (ws-normalized) is provably duplicate
+    content — its full or 1-3-char-truncated form reappears in a target,
+    word-glued (or, full form only, boundary-matched when frag starts
+    lowercase, i.e. is itself a sentence fragment)."""
+    frag = _norm_ws(frag)
+    if not (ORPHAN_MIN_LEN <= len(frag) <= ORPHAN_MAX_LEN):
+        return False
+    starts_low = frag[:1].islower() or frag[:1].isdigit()
+    for raw_target in targets:
+        target = _norm_ws(raw_target)
+        if not target:
+            continue
+        if frag in target:
+            if _glued_occurrence(frag, target) or starts_low:
+                return True
+            continue  # appears cleanly (quotation) — not evidence of junk
+        # Truncated forms: only when the full form is absent, and only
+        # word-glued (see module doc for why both restrictions matter).
+        for t in range(1, ORPHAN_MAX_TRUNC + 1):
+            cand = frag[t:]
+            if len(cand) < ORPHAN_TRUNC_MIN:
+                break
+            if _glued_occurrence(cand, target):
+                return True
+    return False
+
+
+def _is_plain_line(stripped: str) -> bool:
+    return not (
+        not stripped
+        or stripped.startswith(("#", "|", ">", "<"))
+        or _LIST_ITEM_RE.match(stripped)
+        or _HR_RE.match(stripped)
+    )
+
+
+def drop_duplicate_orphans(markdown: str) -> tuple[str, int]:
+    """Drop reordered wrapped-line fragments that duplicate adjacent text.
+
+    (a) a standalone plain line whose text reappears inside the (longer)
+    next non-empty line is dropped; (b) a leading fragment fused before a
+    footnote marker / sentence boundary whose text reappears later in the
+    same line (or the next one) is stripped off. Both require the
+    provably-duplicate match of _is_duplicate_fragment — nothing fuzzy.
+    Returns (markdown, fragments_dropped).
+    """
+    lines = markdown.split("\n")
+    out: list[str] = []
+    dropped = 0
+    in_fence = False
+    skip_next_blank = False
+    for idx, line in enumerate(lines):
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            out.append(line)
+            skip_next_blank = False
+            continue
+        if in_fence:
+            out.append(line)
+            continue
+        if skip_next_blank and not line.strip() and out and not out[-1].strip():
+            skip_next_blank = False
+            continue
+        skip_next_blank = False
+        stripped = line.strip()
+        if not _is_plain_line(stripped):
+            out.append(line)
+            continue
+        next_line = next(
+            (l for l in lines[idx + 1:] if l.strip()), "")
+        # (a) whole-line orphan preceding the full line.
+        if (
+            len(_norm_ws(next_line)) > len(_norm_ws(stripped))
+            and _is_duplicate_fragment(stripped, next_line)
+        ):
+            dropped += 1
+            skip_next_blank = True
+            continue
+        # (b) fragment fused onto the start of the line that duplicates it.
+        cut = None
+        candidates = sorted(
+            {m.start() for m in _FOOT_MARKER_RE.finditer(stripped)}
+            | {m.end() for m in _SENT_BOUND_RE.finditer(stripped)}
+        )
+        # Take the LAST passing split: the orphan may itself contain
+        # sentence punctuation ("…la ley (art. 164 del Código Civil). 1
+        # Salvo…"), so an earlier boundary can pass while leaving junk
+        # behind. Safe because every passing prefix is, by the gate,
+        # provably duplicated in what remains.
+        for pos in candidates:
+            if pos == 0 or pos > ORPHAN_MAX_LEN + 50:
+                continue
+            frag = stripped[:pos].rstrip()
+            if _is_duplicate_fragment(frag, stripped[pos:], next_line):
+                cut = pos
+        if cut is not None:
+            lead = line[: len(line) - len(line.lstrip())]
+            out.append(lead + stripped[cut:])
+            dropped += 1
+            continue
+        out.append(line)
+    return "\n".join(out), dropped
+
+
 # ---------------------------------------------------------------- self-test
 
 # Fixtures below are VERBATIM excerpts from the real defect document:
@@ -541,6 +880,100 @@ dl
 
 Entre  los  servicios  bancarios  que  prestan  las  entidades  de  crédito  se  encuentra,  como  uno de los más característicos, la captación de fondos de los clientes.
 """
+
+# Real icon-glyph shapes from the field document (lines 593/629-631/659/
+# 700/742/1536 and the "TS"/"«1"/"## I" keep-cases), abridged.
+_MD_ICONS = """\
+(Y La aplicación de estos principios de claridad y transparencia en relación con las peticiones de información presenta ciertas singularidades.
+
+- (Y Cuando son varias las cuestiones controvertidas planteadas por el reclamante, se considera mala práctica bancaria.
+
+Y Así,  a  efectos de acreditar la realización de estas comunicaciones a través del sitio web de la entidad, se requiere que esta aporte la prueba.
+
+¡Y
+
+(Y
+
+¡0
+
+CÓ S
+
+CF
+
+## ¡0 Se ha considerado, en los informes emitidos, que las entidades incurren en una mala práctica bancaria cuando:
+
+¡US Asimismo, no se encuentra ajustado a las buenas prácticas bancarias el cobro de la comisión.
+
+LJ Finalmente, si un cliente pide asistencia a su entidad para localizar un ingreso, debe ser atendido.
+"""
+
+_MD_ICONS_KEEP = """\
+## I Criterios de buenas prácticas aplicables en el momento de la contratación
+
+## II Criterios aplicables a medidas restrictivas aplicadas al cliente
+
+## A) Denegar su aplicación, de forma inmediata y motivada
+
+TS Aquellas en las que se excluyen los beneficios del fiador antes explicados: excusión, división y orden.
+
+«1 Los sujetos obligados identificarán a cuantas personas físicas o jurídicas pretendan establecer relaciones de negocio.
+
+EE. UU. La regulación aplicable difiere de la europea en varios aspectos.
+
+- 1 Resulta imprescindible su previsión y concreción en la información precontractual.
+
+- STS n.º 705, de 15 de diciembre de 2015, que declaró la nulidad de la cláusula.
+
+Y ello en razón de que, para la baja del cotitular fallecido, no se precisa sino acreditar la aceptación.
+
+DNI caducado: la entidad debe desplegar una especial diligencia.
+
+19
+
+416
+
+HORSES
+"""
+
+# Real duplicate-orphan lines from the field document (lines 637, 1837,
+# 1845, 1847, 1903, 8094), abridged where marked (…).
+_ORPHAN_P22 = (
+    "5  de diciembre de 1998 y 10 mayo de 1999. 1 Como las de la Audiencia "
+    "Provincial de Córdoba (Sección 2.ª) de 23 de octubre de 1991, 3 de "
+    "diciembre de 1994, 26 de junio de 1995, 15 de diciembre de 1998 y 10 "
+    "mayo de 1999."
+)
+_ORPHAN_P85_A = (
+    "entes extremos: 4 El artículo 7.3 de la orden señala lo siguiente: "
+    "«Los documentos contractuales relativos a servicios bancarios deberán "
+    "recoger de forma explícita y clara los siguientes extremos:"
+)
+_ORPHAN_P85_B = (
+    "nás que establezca el  Banco de España». Los demás que establezca el "
+    "Banco de España»."
+)
+_ORPHAN_P85_C = (
+    "licación e interpretación». 5 La  norma  décima,  apartado  3,  indica "
+    "lo siguiente: «[…] No se incluirá en el contrato ningún concepto que "
+    "resulte innecesario o irrelevante para su correcta aplicación e "
+    "interpretación»."
+)
+_ORPHAN_TS = (
+    "TS de 16 de diciembre de 2014. 17 Véase la STS de 16 de diciembre "
+    "de 2014."
+)
+# Standalone-orphan shape: fragment line emitted before the full line.
+_ORPHAN_STANDALONE = (
+    "5 de diciembre de 1998 y 10 mayo de 1999.\n\n"
+    "1 Como las de la Audiencia Provincial de Córdoba de 23 de octubre de "
+    "1991, 15 de diciembre de 1998 y 10 mayo de 1999.\n"
+)
+# Legitimate quotation: the leading sentence reappears inside the footnote
+# quote — but at a « boundary, not word-glued, and it starts uppercase.
+_ORPHAN_LEGIT_QUOTE = (
+    "Los demás que establezca el Banco de España». 5 La norma indica lo "
+    "siguiente: «Los demás que establezca el Banco de España»."
+)
 
 if __name__ == "__main__":
     failures = 0
@@ -678,6 +1111,82 @@ if __name__ == "__main__":
     cleaned, n = clean_ocr_debris(healthy_short)
     check("zero removals", n == 0, f"removed={n}")
     check("content byte-identical", cleaned == healthy_short)
+
+    # ------------------------------------------------- strip_icon_glyphs
+    print("strip_icon_glyphs (real field-document shapes)")
+    cleaned, n = strip_icon_glyphs(_MD_ICONS)
+    check("all 11 icon tokens stripped", n == 11, f"stripped={n}")
+    check("paragraph '(Y ' prefix gone",
+          cleaned.startswith("La aplicación de estos principios"))
+    check("list-item '(Y ' prefix gone",
+          "- Cuando son varias las cuestiones" in cleaned)
+    check("bare 'Y ' before sentence-starter gone",
+          "\nAsí,  a  efectos de acreditar" in cleaned)
+    check("heading-fused '¡0' gone",
+          "## Se ha considerado, en los informes emitidos" in cleaned)
+    check("'¡US ' and 'LJ ' prefixes gone",
+          "\nAsimismo, no se encuentra ajustado" in cleaned
+          and "\nFinalmente, si un cliente pide asistencia" in cleaned)
+    for frag in ("¡Y", "(Y", "¡0", "CÓ S", "CF"):
+        if frag in cleaned:
+            check(f"standalone {frag!r} gone", False, "still present")
+            break
+    else:
+        check("all standalone icon lines gone", True)
+    check("no stacked blank lines left", "\n\n\n" not in cleaned)
+    again, n2 = strip_icon_glyphs(cleaned)
+    check("idempotent", n2 == 0 and again == cleaned, f"second pass={n2}")
+
+    print("strip_icon_glyphs (real keep-cases: zero changes)")
+    kept, n = strip_icon_glyphs(_MD_ICONS_KEEP)
+    check("zero strips on keep fixture", n == 0, f"stripped={n}")
+    check("keep fixture byte-identical", kept == _MD_ICONS_KEEP)
+
+    # -------------------------------------------- drop_duplicate_orphans
+    print("drop_duplicate_orphans (real fused-fragment lines)")
+    fixed, n = drop_duplicate_orphans(_ORPHAN_P22)
+    check("p22 date fragment stripped", n == 1
+          and fixed.startswith("1 Como las de la Audiencia"), repr(fixed[:40]))
+    check("p22 footnote body intact",
+          fixed.endswith("15 de diciembre de 1998 y 10 mayo de 1999."))
+    fixed, n = drop_duplicate_orphans(_ORPHAN_P85_A)
+    check("p85 'entes extremos:' stripped", n == 1
+          and fixed.startswith("4 El artículo 7.3"), repr(fixed[:40]))
+    fixed, n = drop_duplicate_orphans(_ORPHAN_P85_B)
+    check("p85 'nás que establezca…' (1-char-truncated) stripped", n == 1
+          and fixed == "Los demás que establezca el Banco de España».",
+          repr(fixed))
+    fixed, n = drop_duplicate_orphans(_ORPHAN_P85_C)
+    check("p85 'licación e interpretación».' stripped", n == 1
+          and fixed.startswith("5 La  norma  décima"), repr(fixed[:40]))
+    fixed, n = drop_duplicate_orphans(_ORPHAN_TS)
+    check("'TS de 16…' (uppercase, word-glued in STS) stripped", n == 1
+          and fixed.startswith("17 Véase la STS"), repr(fixed))
+    fixed, n = drop_duplicate_orphans(_ORPHAN_STANDALONE)
+    check("standalone orphan line dropped", n == 1
+          and fixed.lstrip("\n").startswith("1 Como las de la Audiencia"),
+          repr(fixed[:40]))
+
+    print("drop_duplicate_orphans (legitimate content: zero changes)")
+    fixed, n = drop_duplicate_orphans(_ORPHAN_LEGIT_QUOTE)
+    check("legit quoted sentence before footnote kept", n == 0
+          and fixed == _ORPHAN_LEGIT_QUOTE, f"dropped={n}")
+    fixed, n = drop_duplicate_orphans(_MD_HEALTHY)
+    check("healthy real prose untouched", n == 0 and fixed == _MD_HEALTHY,
+          f"dropped={n}")
+    legit_short = "Transferencia\n\nSiguiendo instrucciones del cliente, la entidad transfiere fondos desde la cuenta a otra cuenta.\n"
+    fixed, n = drop_duplicate_orphans(legit_short)
+    check("short term line before its definition kept", n == 0,
+          f"dropped={n}")
+    legit_footnote = (
+        "- 19 En este sentido, se considera contrario a las buenas "
+        "prácticas que la entidad realice manifestaciones genéricas.")
+    fixed, n = drop_duplicate_orphans(legit_footnote)
+    check("list-item footnote never a candidate", n == 0
+          and fixed == legit_footnote, f"dropped={n}")
+    again, n2 = drop_duplicate_orphans(
+        drop_duplicate_orphans(_ORPHAN_P85_B)[0])
+    check("idempotent", n2 == 0, f"second pass={n2}")
 
     if failures:
         print(f"\n{failures} self-test check(s) FAILED")
