@@ -148,7 +148,11 @@ class VerifyResult:
 # triage.py    triage(pdf_path: str) -> TriageResult
 # extract.py   extract(pdf_path: str, route: DocRoute) -> ExtractResult
 # ocr.py       run_ocr(pdf_path: str, mode: OcrMode, out_dir: str,
-#                      languages: str = "eng") -> str   # path to text-layer PDF
+#                      languages: str = "eng",
+#                      pages: list[int] | None = None) -> str
+#                  # path to text-layer PDF; `pages` scopes OCR to the
+#                  # flagged pages — unscoped redo passes corrupt
+#                  # born-digital pages (see ocr.py docstring)
 # verify.py    verify(pdf_path: str, pages: dict[int, str],
 #                     threshold: float = 0.85) -> VerifyResult
 #              reference_pages(pdf_path: str) -> dict[int, str]
@@ -174,6 +178,17 @@ class VerifyResult:
 #                  # remove wrapped-line fragments duplicated before their
 #                  # full line (footnote/TOC reordering artifacts); only on
 #                  # provable (truncation-tolerant) substring duplicates
+#              fix_list_structure(pages: dict[int, str],
+#                                 reference: dict[int, str]
+#                                 ) -> tuple[dict[int, str], dict[int, int]]
+#                  # reference-indent-guided list repair: re-levels items,
+#                  # re-attaches continuation paragraphs, and drops invented
+#                  # markers on top of printed roman/letter markers — all
+#                  # evidence-gated on poppler's marker/text column layout
+# verify.py    orphan_residue_suspect(markdown: str) -> bool
+#                  # page-level fused-duplicate-fragment detector (invisible
+#                  # to unigram AND bigram recall — duplication only adds
+#                  # tokens); feeds order_flagged like toc_order_suspect
 # verify.py    toc_order_suspect(markdown: str) -> bool
 #                  # TOC-shaped page with broken entry structure — feeds
 #                  # order_flagged inside verify() regardless of bigram

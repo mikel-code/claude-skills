@@ -91,7 +91,10 @@ class is therefore caught by a THIRD, structural signal layered on top:
 toc_order_suspect() recognizes TOC-shaped pages whose entry structure is
 broken (orphan-prefixed entries, missing page-number tails, bare-number
 orphan lines, non-monotonic page numbers) and promotes them to order_flagged
-regardless of bigram score. Layering: pages already `flagged` for missing
+regardless of bigram score. A FOURTH signal with the same layering,
+orphan_residue_suspect(), catches OCR'd pages where wrapped-line orphan
+fragments survived repair (see its block comment for the tuning record) —
+another class both recall metrics excuse by construction. Layering: pages already `flagged` for missing
 content are not additionally order-flagged, and recall-None (unverifiable)
 pages stay unflagged; unlike the bigram signal it does NOT require unigram
 to pass the threshold — the field document's page 8 sits at unigram 0.81,
@@ -245,6 +248,107 @@ def toc_order_suspect(markdown: str) -> bool:
         return True
     inversions = sum(1 for a, b in zip(tails, tails[1:]) if b < a)
     return inversions >= TOC_INVERSION_MIN
+
+
+# --------------------------------------------- orphan-residue page signal
+#
+# orphan_residue_suspect(): tesseract-OCR'd footnote/list zones come back
+# with wrapped-line fragments fused before the real line ("al  equivalente
+# ses devengados … y i) la tasa anual equivalente de los intereses
+# devengados …"). repair.drop_duplicate_orphans removes the PROVABLE
+# duplicates, but fragments whose full text never reappears (or reappears
+# altered) survive as residue — and both recall metrics excuse them
+# (unigram: extra tokens never count against a page; bigram: a minority of
+# corrupted lines doesn't drag the page score below ORDER_THRESHOLD).
+# The catchable shape is structural: a PLAIN paragraph line containing a
+# printed marker boundary (footnote number + uppercase, roman/letter
+# paren marker, mid-line dash) whose text BEFORE that boundary starts
+# lowercase (or digit-glued-lowercase, "1s  posibles…") — real Spanish
+# prose before such a boundary starts uppercase. Tuning, all against the
+# 423-page field document (flags exactly its 8 OCR-residue pages
+# {87, 150, 317, 330, 332, 333, 342, 386}, zero others):
+#   * boundaries are printed markers ONLY — sentence punctuation is NOT a
+#     boundary here, because a legitimate cross-page continuation
+#     paragraph ("…catorce pagas. A estos efectos…") starts lowercase and
+#     contains sentence bounds (field pages 107/315 false-flagged until
+#     this was dropped);
+#   * lines that START with a printed marker are skipped — "i) TARGET-BE,
+#     para…" / "a) Carencia…" / "b Fecha de entrada…" are legitimate list
+#     bodies whose lowercase follow-text is content, not residue (field
+#     pages 131/133/273/331/337/355/363/408 false-flagged until skipped);
+#   * markdown LIST ITEMS are skipped entirely — a fused-orphan list item
+#     is repair.drop_duplicate_orphans' territory, and counting them
+#     false-flagged field page 343 (one item + one plain residue line);
+#   * a page flags at >= RESIDUE_MIN_LINES suspect lines: one lowercase-
+#     start line can be a page-break continuation; two on one page is the
+#     disease signature.
+# Layered into verify() exactly like toc_order_suspect (structural, no
+# reference needed, no unigram gate). With OCR now page-scoped upstream,
+# future conversions should rarely trip this — it remains the residue
+# catcher for genuinely-OCR'd pages.
+
+RESIDUE_MIN_LINES = 2    # suspect lines on one page that flag it
+RESIDUE_FRAG_MIN = 2     # pre-boundary fragment length bounds: a residue
+RESIDUE_FRAG_MAX = 120   # fragment is (part of) one wrapped print line
+
+# Printed-marker boundaries (mirror repair.py's orphan boundary set minus
+# sentence punctuation): footnote number + uppercase (not glued to a
+# larger number/date — "30 de abril" never matches), roman/letter paren
+# markers (lowercase follow allowed), mid-line dashes.
+_RESIDUE_FOOT_RE = re.compile(
+    r"(?<![\d.,/§º°-])\d{1,2}[ \t\xa0]+(?=[A-ZÁÉÍÓÚÑÜ«¡])"
+)
+_RESIDUE_MARK_RE = re.compile(
+    r"(?<![\w.,/§º°-])(?:[ivxlcdm]{1,4}\)|[a-z]\)|[—-])[ \t\xa0]+(?=[\w«¡])"
+)
+# Line-leading printed markers (legitimate list bodies, skipped): roman/
+# letter + ")" or ".", or a single lowercase letter directly before an
+# uppercase word (table-footnote letters: "b Fecha de entrada en vigor…").
+_RESIDUE_LEAD_MARKER_RE = re.compile(
+    r"^(?:[ivxlcdm]{1,4}[).]|[a-z][).]|[a-z](?=[ \t\xa0]+[A-ZÁÉÍÓÚÑÜ«¡]))"
+)
+_RESIDUE_LIST_RE = re.compile(r"^(?:[-*+]|\d{1,3}[.)])\s+")
+_RESIDUE_CORRUPT_RE = re.compile(r"^\d{1,2}[a-záéíóúñü]")
+_RESIDUE_HR_RE = re.compile(r"^\s*(?:[-*_]\s*){3,}$")
+_RESIDUE_FENCE_RE = re.compile(r"^\s*(?:```|~~~)")
+
+
+def orphan_residue_suspect(markdown: str) -> bool:
+    """True when this page's markdown carries >= RESIDUE_MIN_LINES plain
+    lines shaped like OCR orphan residue: text before a printed marker
+    boundary that starts lowercase/corrupted. Purely structural, no
+    reference needed. See the block comment above for the tuning record.
+    """
+    suspects = 0
+    in_fence = False
+    for line in markdown.split("\n"):
+        if _RESIDUE_FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        body = line.strip()
+        if (not body or body.startswith(("#", "|", ">", "<"))
+                or _RESIDUE_HR_RE.match(body)
+                or _RESIDUE_LIST_RE.match(body)
+                or _RESIDUE_LEAD_MARKER_RE.match(body)):
+            continue
+        cands = sorted(
+            {m.start() for m in _RESIDUE_FOOT_RE.finditer(body)}
+            | {m.start() for m in _RESIDUE_MARK_RE.finditer(body)}
+        )
+        pos = next((p for p in cands if p > 0), None)
+        if pos is None:
+            continue
+        frag = body[:pos].rstrip()
+        if not (RESIDUE_FRAG_MIN <= len(frag) <= RESIDUE_FRAG_MAX):
+            continue
+        if frag[:1].islower() or _RESIDUE_CORRUPT_RE.match(frag):
+            suspects += 1
+            if suspects >= RESIDUE_MIN_LINES:
+                return True
+    return False
+
 
 # Numbers first so "1.2" / "1,204" survive as one token instead of shattering
 # into single digits that the min-length rule would then drop.
@@ -447,22 +551,28 @@ def verify(pdf_path: str, pages: dict[int, str],
         if recall[p] is not None and recall[p] >= threshold
         and bigram[p] is not None and bigram[p] < ORDER_THRESHOLD
     ]
-    # Second order signal, same layering: TOC-shaped pages whose entry
-    # STRUCTURE is broken join order_flagged regardless of bigram score —
-    # the field document's reordered TOC pages score bigram 0.81-0.92
-    # (inside the clean-table range, see ORDER_THRESHOLD writeup), so no
-    # bigram threshold can catch them without false-flagging clean tables.
-    # toc_order_suspect is structural and needs no reference, so unlike the
-    # bigram path it does NOT require unigram >= threshold (the field
-    # document's broken TOC page sits at unigram 0.81, excused by the
-    # spillover retry — requiring the threshold would silence the signal).
-    # The rest of the contract's layering still applies: a page already
-    # `flagged` for missing content is not additionally order-flagged, and
-    # recall-None (unverifiable) pages stay unflagged per the contract rule.
+    # Structural order signals, same layering: pages whose markdown
+    # STRUCTURE is broken join order_flagged regardless of bigram score.
+    # Two detectors, both structural and reference-free:
+    #   * toc_order_suspect — the field document's reordered TOC pages
+    #     score bigram 0.81-0.92 (inside the clean-table range, see
+    #     ORDER_THRESHOLD writeup), so no bigram threshold can catch them
+    #     without false-flagging clean tables;
+    #   * orphan_residue_suspect — OCR'd footnote zones keep unprovable
+    #     orphan fragments that unigram recall excuses by construction
+    #     (extra tokens never count against a page) and that are too few
+    #     per page to move bigram recall.
+    # Unlike the bigram path they do NOT require unigram >= threshold (the
+    # field document's broken TOC page sits at unigram 0.81, excused by
+    # the spillover retry — requiring the threshold would silence the
+    # signal). The rest of the contract's layering still applies: a page
+    # already `flagged` for missing content is not additionally
+    # order-flagged, and recall-None (unverifiable) pages stay unflagged
+    # per the contract rule.
     for p in sorted(pages):
         if p in flagged or p in order_flagged or recall[p] is None:
             continue
-        if toc_order_suspect(pages[p]):
+        if toc_order_suspect(pages[p]) or orphan_residue_suspect(pages[p]):
             order_flagged.append(p)
     order_flagged.sort()
     return VerifyResult(
@@ -526,6 +636,54 @@ _LIST_NOT_TOC = """\
 - STS n.º 457, de 24 de julio de 2020, que confirmó la partición de los gastos.
 - STS n.º 555, de 26 de octubre de 2020, sobre los gastos de gestoría.
 - STS n.º 35, de 27 de enero de 2021, sobre los gastos de tasación.
+"""
+
+# Verbatim OCR-residue lines from field pages 87 and 330: plain lines with
+# a fused orphan fragment (lowercase-start) before a printed marker
+# boundary — the shape orphan_residue_suspect exists to catch.
+_RESIDUE_87 = """\
+al  equivalente ses devengados por el  descubierto durante el  período de \
+liquidación de este, y i) la tasa anual equivalente de los intereses \
+devengados por el descubierto durante el período de liquidación de este, y
+
+al  equivalente eses se calculará teniendo en cuenta el saldo medio deudor \
+del  período de liquidación; - la tasa anual equivalente de los intereses \
+se calculará teniendo en cuenta el saldo medio deudor del período de \
+liquidación;
+"""
+
+_RESIDUE_330 = """\
+npendio de consultas a  la  Comisión de Control sobre la aplicación del  \
+CBP. 17 Consulta 28.a del compendio de consultas a la Comisión de Control \
+sobre la aplicación del CBP .
+
+mpendio de consultas a  la  Comisión de Control sobre la aplicación del  \
+CBP. 19 Consulta 28.b del compendio de consultas a la Comisión de Control \
+sobre la aplicación del CBP .
+"""
+
+# Field page 131/133 shape: lines that START with a printed roman/letter
+# marker are legitimate list bodies, never residue.
+_RESIDUE_MARKER_LED = """\
+i) TARGET-BE, para el procesamiento de grandes pagos. Se trata de un \
+sistema de liquidación bruta en tiempo real.
+
+ii) Sistema Nacional de Compensación Electrónica (SNCE), para los pagos \
+de pequeño importe. Está gestionado por Iberpay, una empresa privada.
+
+b Fecha de entrada en vigor de la Ley 41/2007. A los préstamos \
+hipotecarios anteriores no les resulta de aplicación.
+"""
+
+# Field page 107 shape: a cross-page continuation paragraph legitimately
+# starts lowercase and contains sentence punctuation — sentence bounds are
+# deliberately NOT residue boundaries.
+_RESIDUE_CONTINUATION = """\
+mínimo, a los servicios incluidos en la lista de terminología \
+estandarizada. Dicho sitio web deberá estar debidamente actualizado.
+
+de estos y de los resultados de las búsquedas. El artículo de la Orden \
+establece los requisitos del comparador de comisiones.
 """
 
 if __name__ == "__main__":
@@ -687,6 +845,62 @@ if __name__ == "__main__":
     print("case 11: clean TOC page does not order-flag")
     r = verify(simple, {1: ref[0] + "\n" + _TOC_CLEAN, 2: ref[1]})
     check("page 1 not order_flagged", 1 not in r.order_flagged,
+          f"order_flagged={r.order_flagged}")
+
+    # 12. orphan_residue_suspect on real field-document shapes.
+    print("case 12: orphan_residue_suspect structural signal")
+    check("OCR'd footnote block with 2 fused-orphan lines is suspect",
+          orphan_residue_suspect(_RESIDUE_87), "expected True")
+    check("corrupted footnote pair (npendio/mpendio) is suspect",
+          orphan_residue_suspect(_RESIDUE_330), "expected True")
+    one_line = _RESIDUE_87.split("\n\n")[0]
+    check("a single residue line does not flag (page-break tolerance)",
+          not orphan_residue_suspect(one_line), "expected False")
+    check("marker-led list bodies are not residue",
+          not orphan_residue_suspect(_RESIDUE_MARKER_LED), "expected False")
+    check("lowercase continuation paragraphs are not residue",
+          not orphan_residue_suspect(_RESIDUE_CONTINUATION),
+          "expected False")
+    sts_lines = ("21 Véase la STS de 30 de abril de 1960.\n\n"
+                 "22 Véase la STS de 27 de mayo de 1998.")
+    check("'STS de 30 de abril' footnotes are not residue "
+          "(number + lowercase is no boundary)",
+          not orphan_residue_suspect(sts_lines), "expected False")
+    num_start = (
+        "15 de diciembre de 1998 y 10 mayo de 1999. 17 Consulta 28.a "
+        "del compendio de consultas.\n\n"
+        "23 de octubre de 1991 y 3 de diciembre de 1994. 19 Consulta "
+        "28.b del compendio de consultas.")
+    check("sentences starting with a number are not residue",
+          not orphan_residue_suspect(num_start), "expected False")
+    quoted = (
+        "Los demás que establezca el Banco de España». 5 La norma indica "
+        "lo siguiente: «Los demás que establezca el Banco de España».\n\n"
+        "Los demás que establezca el Banco de España». 6 La norma repite "
+        "lo siguiente: «Los demás que establezca el Banco de España».")
+    check("quoted repetitions before footnote markers are not residue",
+          not orphan_residue_suspect(quoted), "expected False")
+    check("list items never count as residue lines",
+          not orphan_residue_suspect(
+              "- cubierto tácito. a) Del descubierto tácito.\n\n"
+              "- orte del  descubierto tácito. b) Del importe del "
+              "descubierto tácito."), "expected False")
+    check("plain prose page is not residue",
+          not orphan_residue_suspect(ref[0]), "expected False")
+    check("broken TOC page is not residue (toc_order_suspect's class)",
+          not orphan_residue_suspect(_TOC_BROKEN), "expected False")
+
+    # 13. verify() wiring: a page whose markdown carries the residue block
+    # joins order_flagged even though unigram recall passes (extra tokens
+    # never count against a page) and bigram is untouched on the healthy
+    # majority of the page.
+    print("case 13: verify() wires orphan residue into order_flagged")
+    r = verify(simple, {1: ref[0] + "\n" + _RESIDUE_87, 2: ref[1]})
+    check("page 1 passes unigram", 1 not in r.flagged,
+          f"recall={r.recall[1]}")
+    check("page 1 order_flagged via residue signal", 1 in r.order_flagged,
+          f"order_flagged={r.order_flagged}")
+    check("page 2 untouched", 2 not in r.order_flagged,
           f"order_flagged={r.order_flagged}")
 
     if failures:

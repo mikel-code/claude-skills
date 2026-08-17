@@ -279,6 +279,29 @@ plain digits; margin badge icons can leak short glyph runs ("CF") into
 adjacent paragraphs; the docling cell-reversal bug itself is upstream
 (worth reporting to docling with the reproducing document).
 
+**Third round (list structure + OCR scoping, 2026-08-17).** The biggest
+find was self-inflicted: an UNSCOPED `ocrmypdf --redo-ocr` pass rewrites
+born-digital pages, and tesseract overlay text coexisting with the real
+text layer manufactures duplicated/truncated/glyph-corrupted fragments
+document-wide (the fused-orphan disease). OCR is now scoped with
+`--pages` to exactly the flagged pages (FORCE stays document-wide by
+definition) — the corruption never happens for pages that never needed
+OCR. Docling's list defects (continuation paragraphs flattened out of
+items; invented markers stacked on printed roman/letter markers; level
+errors) were confirmed to live in its document MODEL, not the serializer
+— no MarkdownParams config helps — so `repair.fix_list_structure` repairs
+them post-hoc using poppler's marker/text column layout as nesting ground
+truth (the marker→text column gap also distinguishes printed markers from
+sentences that legitimately start with a number). `drop_duplicate_orphans`
+gained a narrowly-certified boundary extension (roman/letter/dash
+markers, untruncated multi-chunk prefixes; fuzzy matching was tested and
+rejected — it eats quoted repetitions). `verify.orphan_residue_suspect`
+catches the residue pages (fused duplicates are invisible to both recall
+metrics by construction — duplication only adds tokens). Deep footnote
+NESTING (quote → letter → roman → dash hierarchies) remains vision
+territory: the printed footnote columns are too compressed for reliable
+re-leveling.
+
 ## Future work (the reason this file exists)
 
 - **Granite-Docling-258M MLX** (`ibm-granite/granite-docling-258M-mlx`): IBM's

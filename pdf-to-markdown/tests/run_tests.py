@@ -523,6 +523,184 @@ def run_repair2_checks():
         run_check("repair2", name, locals()[name])
 
 
+# ----------------------------------------- repair3 (field-defect round 3)
+#
+# Regression checks for the third field-hardening round against
+# CCBPBAbril2026.md: reference-indent list-structure repair
+# (repair.fix_list_structure, classes A/B/C with the class-D bare-number
+# gap guard), the generalized fused-orphan rules
+# (repair.drop_duplicate_orphans branch (b)), and the OCR orphan-residue
+# page signal (verify.orphan_residue_suspect). Fixture strings are
+# verbatim (abridged) excerpts of the real defect document and its
+# `pdftotext -layout` reference.
+
+REPAIR3_CHECKS = [
+    "list_structure_class_b_and_d_guard",
+    "list_structure_class_c_relevel",
+    "list_structure_class_a_attach",
+    "list_structure_healthy_untouched",
+    "orphans_generalized_dropped",
+    "orphans_generalized_keep_negatives",
+    "orphan_residue_suspect_positive_negative",
+]
+
+_R3_MD_B = ("2. ii) Para exigir el reembolso del saldo deudor deberá "
+            "realizarse la liquidación previa.")
+_R3_REF_B = (
+    "                  ii)   Para exigir el reembolso del saldo deudor "
+    "deberá realizarse la\n"
+    "                        liquidación previa.")
+_R3_MD_D = "1. 15 de diciembre de 2015, fecha de la sentencia citada."
+_R3_REF_D = "     15 de diciembre de 2015, fecha de la sentencia citada."
+_R3_MD_C = (
+    "- 3 Finalmente, de producirse el efectivo devengo de los gastos:\n"
+    "- Se deberá informar de estos con carácter previo a su cargo.\n"
+    "- No cabrá el cobro de más de una comunicación para un mismo saldo.")
+_R3_REF_C = (
+    "              3         Finalmente, de producirse el efectivo "
+    "devengo de los gastos:\n\n"
+    "                        • Se deberá informar de estos con carácter "
+    "previo a su cargo.\n\n"
+    "                        • No cabrá el cobro de más de una "
+    "comunicación para un mismo saldo.")
+_R3_MD_A = (
+    "Párrafo normal del cuerpo de la página que continúa aquí\n"
+    "en una segunda línea impresa en la misma columna del cuerpo.\n\n"
+    "- i) Se deberá dar la posibilidad a los clientes de desautorizar "
+    "el cargo.\n\n"
+    "En el caso de girarse estos gastos de forma previa a la "
+    "liquidación, se entenderá que dichos gastos forman parte del coste.")
+_R3_REF_A = (
+    "Párrafo normal del cuerpo de la página que continúa aquí\n"
+    "en una segunda línea impresa en la misma columna del cuerpo.\n\n"
+    "                  i)    Se deberá dar la posibilidad a los clientes "
+    "de desautorizar el cargo.\n\n"
+    "                        En el caso de girarse estos gastos de forma "
+    "previa a la liquidación,\n"
+    "                        se entenderá que dichos gastos forman parte "
+    "del coste.")
+_R3_ORPHAN_ITEM = "- cubierto tácito. a) Del descubierto tácito."
+_R3_ORPHAN_GLUED10 = (
+    "ratorio de: Como excepción a lo anterior, cuando las comisiones "
+    "giren sobre el mayor descubierto, la tasa anual equivalente se "
+    "obtendrá como sumatorio de:")
+_R3_ORPHAN_CHUNKS = (
+    "al  equivalente eses se calculará teniendo en cuenta el saldo medio "
+    "deudor del  período de liquidación; - la tasa anual equivalente de "
+    "los intereses se calculará teniendo en cuenta el saldo medio deudor "
+    "del período de liquidación;")
+_R3_ORPHAN_KEEP_STS = "21 Véase la STS de 30 de abril de 1960."
+_R3_ORPHAN_KEEP_NUM = (
+    "15 de diciembre de 1998 y 10 mayo de 1999 son las fechas de las "
+    "sentencias de la Audiencia Provincial citadas.")
+_R3_RESIDUE = (
+    "al  equivalente ses devengados por el  descubierto durante el  "
+    "período de liquidación de este, y i) la tasa anual equivalente de "
+    "los intereses devengados por el descubierto durante el período de "
+    "liquidación de este, y\n\n"
+    "al  equivalente eses se calculará teniendo en cuenta el saldo medio "
+    "deudor del  período de liquidación; - la tasa anual equivalente de "
+    "los intereses se calculará teniendo en cuenta el saldo medio deudor "
+    "del período de liquidación;")
+_R3_RESIDUE_MARKER_LED = (
+    "i) TARGET-BE, para el procesamiento de grandes pagos. Se trata de "
+    "un sistema de liquidación bruta en tiempo real.\n\n"
+    "ii) Sistema Nacional de Compensación Electrónica (SNCE), para los "
+    "pagos de pequeño importe. Está gestionado por Iberpay.")
+
+
+def run_repair3_checks():
+    repair_mod, repair_err = try_import("repair")
+    verify_mod, verify_err = try_import("verify")
+
+    def _need_repair(attr):
+        if repair_mod is None:
+            raise SkipCheck(f"repair not present: {repair_err}")
+        if not hasattr(repair_mod, attr):
+            raise SkipCheck(f"repair.{attr} not implemented")
+
+    def list_structure_class_b_and_d_guard():
+        _need_repair("fix_list_structure")
+        fixed, counts = repair_mod.fix_list_structure(
+            {1: _R3_MD_B}, {1: _R3_REF_B})
+        assert counts == {1: 1}, f"counts={counts}"
+        assert fixed[1].startswith("- ii) Para exigir"), fixed[1][:30]
+        # Class-D guard: bare number with a 1-space gap in print is not a
+        # marker — the md item must come back as the SAME object.
+        fixed, counts = repair_mod.fix_list_structure(
+            {1: _R3_MD_D}, {1: _R3_REF_D})
+        assert counts == {} and fixed[1] is _R3_MD_D, f"counts={counts}"
+
+    def list_structure_class_c_relevel():
+        _need_repair("fix_list_structure")
+        fixed, counts = repair_mod.fix_list_structure(
+            {1: _R3_MD_C}, {1: _R3_REF_C})
+        assert counts == {1: 2}, f"counts={counts}"
+        out = fixed[1]
+        assert out.startswith("- 3 Finalmente"), out[:20]
+        assert "\n    - Se deberá informar" in out, out
+        assert "\n    - No cabrá el cobro" in out, out
+
+    def list_structure_class_a_attach():
+        _need_repair("fix_list_structure")
+        fixed, counts = repair_mod.fix_list_structure(
+            {1: _R3_MD_A}, {1: _R3_REF_A})
+        assert counts == {1: 1}, f"counts={counts}"
+        assert "\n    En el caso de girarse" in fixed[1], fixed[1]
+        assert fixed[1].startswith("Párrafo normal"), fixed[1][:20]
+
+    def list_structure_healthy_untouched():
+        _need_repair("fix_list_structure")
+        md = ("- 1 Resulta imprescindible su previsión y concreción en "
+              "la información precontractual.\n"
+              "- 2 Además, en dicha información se deberá recoger lo "
+              "siguiente:")
+        ref = ("  1   Resulta imprescindible su previsión y concreción "
+               "en la\n"
+               "      información precontractual.\n"
+               "  2   Además, en dicha información se deberá recoger lo "
+               "siguiente:")
+        fixed, counts = repair_mod.fix_list_structure({1: md}, {1: ref})
+        assert counts == {} and fixed[1] is md, f"counts={counts}"
+
+    def orphans_generalized_dropped():
+        _need_repair("drop_duplicate_orphans")
+        fixed, n = repair_mod.drop_duplicate_orphans(_R3_ORPHAN_ITEM)
+        assert n == 1 and fixed == "- a) Del descubierto tácito.", (n, fixed)
+        fixed, n = repair_mod.drop_duplicate_orphans(_R3_ORPHAN_GLUED10)
+        assert n == 1 and fixed.startswith("Como excepción"), (n, fixed[:30])
+        fixed, n = repair_mod.drop_duplicate_orphans(_R3_ORPHAN_CHUNKS)
+        assert n == 1 and fixed.startswith("- la tasa anual"), (n, fixed[:30])
+
+    def orphans_generalized_keep_negatives():
+        _need_repair("drop_duplicate_orphans")
+        for text in (_R3_ORPHAN_KEEP_STS, _R3_ORPHAN_KEEP_NUM,
+                     _R2_ORPHAN_KEEP):
+            fixed, n = repair_mod.drop_duplicate_orphans(text)
+            assert n == 0 and fixed == text, (n, text[:40])
+
+    def orphan_residue_suspect_positive_negative():
+        if verify_mod is None:
+            raise SkipCheck(f"verify not present: {verify_err}")
+        if not hasattr(verify_mod, "orphan_residue_suspect"):
+            raise SkipCheck("verify.orphan_residue_suspect not implemented")
+        assert verify_mod.orphan_residue_suspect(_R3_RESIDUE), (
+            "residue block not suspect")
+        assert not verify_mod.orphan_residue_suspect(
+            _R3_RESIDUE_MARKER_LED), "marker-led list bodies wrongly suspect"
+        assert not verify_mod.orphan_residue_suspect(
+            _R3_RESIDUE.split("\n\n")[0]), "single residue line flagged"
+        assert not verify_mod.orphan_residue_suspect(
+            "21 Véase la STS de 30 de abril de 1960.\n\n"
+            "22 Véase la STS de 27 de mayo de 1998."), (
+            "STS footnotes wrongly suspect")
+        assert not verify_mod.orphan_residue_suspect(
+            SYNTHETIC_PROBE_SIMPLE_PAGES[1]), "prose page wrongly suspect"
+
+    for name in REPAIR3_CHECKS:
+        run_check("repair3", name, locals()[name])
+
+
 # -------------------------------------------------------- end-to-end (e2e)
 
 E2E_CHECKS = [
@@ -687,6 +865,7 @@ def main() -> None:
     run_ocr_checks()
     run_verify_checks()
     run_repair2_checks()
+    run_repair3_checks()
     run_report_checks()
     run_okf_checks()
     run_e2e_checks()

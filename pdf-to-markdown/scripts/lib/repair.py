@@ -1,6 +1,6 @@
 """Deterministic text repair (contract: repair.py signature block).
 
-Five pure functions fixing defect classes CONFIRMED on a real document
+Six pure functions fixing defect classes CONFIRMED on a real document
 (CCBPBAbril2026.pdf, Banco de España, 424 pp — docling route + tesseract OCR
 on decorative pages). Each repair is deterministic and evidence-gated: no
 model calls, no guessing. Anything not provably broken is left byte-identical.
@@ -167,28 +167,76 @@ model calls, no guessing. Anything not provably broken is left byte-identical.
    minus its first 1-3 characters — reappears as a substring of the rest of
    the same line or the next non-empty line. Split candidates within a
    line: positions after sentence-final punctuation ([.:;»!?] + space +
-   uppercase/«/¡/digit) and footnote-marker starts (1-2 digit number +
-   space + uppercase/«, the number not glued to a bigger number/date).
-   Junk gates (ALL required):
-     * normalized F is 12-200 chars (a wrapped-line fragment, not a
-       paragraph); truncated forms must keep >= 10 chars;
-     * the reappearance must be PROVABLY a tail of a longer run: either the
-       match is word-glued (immediately preceded by a word character —
-       "sigui|entes", "1|5 de", "S|TS", "dem|ás" after truncation) or, for
-       the untruncated form only, F starts with a lowercase letter (a
-       sentence fragment — "sin demora de los siguientes extremos:" — since
-       real sentences start uppercase). Truncated forms (t>0) are tried
-       only when the untruncated F does not appear at all, and always
-       require the glued match — otherwise any legitimately-quoted sentence
-       would strip via its own 1-char truncation;
-     * only plain text lines: headings, list items, table rows,
-       blockquotes, HTML and fenced code are never candidates (broken TOC
-       entries are verify.toc_order_suspect's job, not a repair).
-   A legitimate quotation ("Los demás que establezca el Banco de España».
-   5 La norma dice: «Los demás…»") fails both branches: it starts
-   uppercase and its match starts at a «/space boundary, not word-glued.
-   Returns (markdown, fragments_dropped); a dropped standalone line takes
-   one adjacent blank line with it.
+   uppercase/«/¡/digit), footnote-marker starts (1-2 digit number +
+   space + uppercase/«, the number not glued to a bigger number/date),
+   and — second field round, generalized against the whole document with
+   zero false positives — printed roman/letter list markers ("i)", "a)",
+   lowercase follow-word allowed: OCR'd footnotes fuse an orphan before
+   "i) la tasa…") plus mid-line dash markers ("— la tasa…"). Bare numbers
+   before a lowercase word are deliberately NOT boundaries: that variant
+   ate the healthy "21 Véase la STS de 30 de abril de 1960." (a date is
+   exactly "number + lowercase") and stays rejected. The two branches
+   gate differently:
+     (a) standalone lines (a fragment line emitted before its full line)
+       keep the original gates unchanged: normalized F is 12-200 chars,
+       only plain non-list lines, and the reappearance in the (longer)
+       next line must be PROVABLY a tail of a longer run — word-glued
+       (immediately preceded by a word character: "sigui|entes", "1|5 de",
+       "S|TS") or, full form only, F starts with a lowercase letter (a
+       sentence fragment, since real sentences start uppercase). Truncated
+       forms (1-3 chars off the front, >= 10 chars left) are tried only
+       when the untruncated F does not appear at all, and always require
+       the glued match — otherwise any legitimately-quoted sentence would
+       strip via its own 1-char truncation;
+     (b) fused prefixes (fragment glued onto the start of the very line
+       that repeats it) use the generalized gates: F is 10-200 chars;
+       word-glued full-form match at >= 10 chars, OR lowercase/digit-start
+       full-form containment at >= 12 chars, OR a 1-3-char-truncated form
+       word-glued (full form absent, >= 10 chars left), OR — multi-chunk
+       evidence, for orphans that were themselves re-wrapped in print — F
+       splits into 2-3 whitespace-boundary chunks, EACH >= 12 chars and
+       EACH reappearing word-glued (chunks are never truncated; only the
+       first chunk may drop 1-3 leading chars, mirroring the whole-
+       fragment truncation rule). List items ARE candidates for this
+       branch (the field document's OCR'd footnote lists carry fused
+       orphans: "- cubierto tácito. a) Del descubierto tácito."); the
+       markdown marker is preserved and only the body prefix is cut.
+       Fuzzy/edit-distance matching was evaluated and REJECTED (it
+       stripped legitimately-quoted near-repetitions); do not add it.
+   Common gates: headings, table rows, blockquotes, HTML and fenced code
+   are never candidates (broken TOC entries are verify.toc_order_suspect's
+   job, not a repair). A legitimate quotation ("Los demás que establezca
+   el Banco de España». 5 La norma dice: «Los demás…»") fails every
+   branch: it starts uppercase and its match starts at a «/space
+   boundary, not word-glued. Returns (markdown, fragments_dropped); a
+   dropped standalone line takes one adjacent blank line with it.
+
+6. fix_list_structure(pages, reference) — reference-indent-guided list
+   repair (docling route; certified on the field document: 20/20
+   random-sample audit correct, zero changes on every repo fixture through
+   both engines). Three confirmed defect classes, all gated on the
+   `pdftotext -layout` reference's printed indentation:
+     A. continuation paragraphs flattened out of items: a paragraph whose
+        printed indent proves it belongs INSIDE the preceding list item is
+        re-attached (indented one level below the item);
+     B. invented markers on top of printed markers: docling emits
+        "2. ii) Para exigir…" where print shows "ii)" as the line-leading
+        marker — the invented positional "2." is dropped ("- ii) …");
+     C. level errors: items of one markdown run whose printed marker
+        columns form >= 2 clearly separated columns are re-nested to
+        match the print.
+   Guards (each tuned through four false-positive rounds — preserve
+   exactly; the inline comments carry the per-guard rationale):
+   marker-required run matching (class C only acts on runs where EVERY
+   item matched a marker-bearing reference line), continuation-indent
+   depth requirement with the deep-wrapped-lines check (class A),
+   ordinal-chain column merging (jittered/right-aligned markers of one
+   printed list collapse to their chain median before clustering), and
+   the class-D bare-number gap guard (a bare number is only a printed
+   marker when the reference shows a marker->text gap >= 2 columns —
+   sentences that merely START with a number never match). Same shape as
+   fix_word_reversal: 1-indexed pages, returns (pages, {page: changes}),
+   and a page with zero changes comes back as the SAME string object.
 
 Stdlib only; imports contract only (per module rules). Self-test:
 `uv run repair.py` — fixtures are verbatim excerpts of the real document's
@@ -200,6 +248,7 @@ import html
 import re
 import sys
 import unicodedata
+from collections import Counter
 
 from contract import Reason  # noqa: F401  (re-exported context; see contract)
 
@@ -627,10 +676,13 @@ def strip_icon_glyphs(markdown: str) -> tuple[str, int]:
 
 # ----------------------------------------------------- duplicate orphans
 
-ORPHAN_MIN_LEN = 12    # normalized fragment floor (full form)
+ORPHAN_MIN_LEN = 12    # normalized fragment floor (standalone/lowercase form)
 ORPHAN_TRUNC_MIN = 10  # floor after 1-3-char truncation
 ORPHAN_MAX_LEN = 200   # a fragment is one wrapped line, never a paragraph
 ORPHAN_MAX_TRUNC = 3   # chars the fragment may have lost at its start
+ORPHAN_GLUED_MIN = 10  # fused-prefix branch: floor for word-glued matches
+ORPHAN_CHUNK_MIN = 12  # multi-chunk evidence: per-chunk floor
+ORPHAN_MAX_CHUNKS = 3  # multi-chunk evidence: partition size cap
 
 # Footnote marker: standalone 1-2 digit number + space + uppercase/«¡ —
 # the number must not be glued to a larger number/date ("1998 y", "5/2012").
@@ -639,6 +691,16 @@ _FOOT_MARKER_RE = re.compile(
 )
 # Sentence boundary usable as a fragment/real-content split point.
 _SENT_BOUND_RE = re.compile(r"[.:;»!?…][ \t\xa0]+(?=[A-ZÁÉÍÓÚÑÜ«¡\d])")
+# Printed roman/letter list markers and mid-line dashes: OCR'd footnote
+# blocks fuse orphans before these ("de este. ii) la tasa…"), and the
+# marker's follow word is usually LOWERCASE, which the sentence-boundary
+# pattern deliberately rejects. Bare numbers are NOT in this set — see
+# module doc item 5 (the "STS de 30 de abril" keep-case).
+_INLINE_MARK_RE = re.compile(
+    r"(?<![\w.,/§º°-])(?:[ivxlcdm]{1,4}\)|[a-z]\)|[—-])[ \t\xa0]+(?=[\w«¡])"
+)
+# Markdown list-item marker (for stripping/preserving in branch (b)).
+_ITEM_PREFIX_RE = re.compile(r"^([-*+]\s+|\d{1,3}[.)]\s+)")
 # NBSP included: the field document mixes \xa0 into otherwise-plain runs
 # ("artículo\xa07.3"), and whitespace flavor must not defeat the
 # exact-substring duplicate gate.
@@ -691,6 +753,69 @@ def _is_duplicate_fragment(frag: str, *targets: str) -> bool:
     return False
 
 
+def _is_duplicate_prefix(frag: str, *targets: str) -> bool:
+    """Branch (b) gates (module doc item 5): frag is provably a duplicated
+    fused prefix. Wider than _is_duplicate_fragment in exactly three
+    certified ways — glued floor 10 (vs 12), truncated-form floor 10, and
+    multi-chunk evidence — and never used for standalone lines."""
+    frag = _norm_ws(frag)
+    if not (ORPHAN_GLUED_MIN <= len(frag) <= ORPHAN_MAX_LEN):
+        return False
+    starts_low = frag[:1].islower() or frag[:1].isdigit()
+    for raw_target in targets:
+        target = _norm_ws(raw_target)
+        if not target:
+            continue
+        if frag in target and (
+            _glued_occurrence(frag, target)
+            or (starts_low and len(frag) >= ORPHAN_MIN_LEN)
+        ):
+            return True
+        # Truncated forms: only when the full form is absent, and only
+        # word-glued (same reasoning as _is_duplicate_fragment).
+        for t in range(1, ORPHAN_MAX_TRUNC + 1):
+            cand = frag[t:]
+            if len(cand) < ORPHAN_GLUED_MIN:
+                break
+            if frag not in target and _glued_occurrence(cand, target):
+                return True
+        # Multi-chunk evidence: the orphan was itself re-wrapped in print,
+        # so its pieces reappear glued at separate spots ("al  equivalente
+        # ses devengados…" -> "anu|al equivalente" + "los intere|ses
+        # devengados…"). Strictly 2-3 chunks (one chunk is the cases
+        # above), each >= ORPHAN_CHUNK_MIN chars and each word-glued; only
+        # the FIRST chunk may drop 1-3 leading chars (the whole-fragment
+        # truncation rule), other chunks are never truncated — per-chunk
+        # truncation would let short accidental substrings assemble a
+        # false proof.
+        words = frag.split(" ")
+        if len(words) >= 2:
+            def _partition(ws: list[str], depth: int, first: bool) -> bool:
+                if not ws:
+                    return depth >= 2
+                if depth >= ORPHAN_MAX_CHUNKS:
+                    return False
+                for k in range(len(ws), 0, -1):
+                    chunk = " ".join(ws[:k])
+                    ok = (len(chunk) >= ORPHAN_CHUNK_MIN
+                          and _glued_occurrence(chunk, target))
+                    if not ok and first:
+                        for t in range(1, ORPHAN_MAX_TRUNC + 1):
+                            cand = chunk[t:]
+                            if len(cand) < ORPHAN_CHUNK_MIN:
+                                break
+                            if _glued_occurrence(cand, target):
+                                ok = True
+                                break
+                    if ok and _partition(ws[k:], depth + 1, False):
+                        return True
+                return False
+
+            if _partition(words, 0, True):
+                return True
+    return False
+
+
 def _is_plain_line(stripped: str) -> bool:
     return not (
         not stripped
@@ -704,10 +829,12 @@ def drop_duplicate_orphans(markdown: str) -> tuple[str, int]:
     """Drop reordered wrapped-line fragments that duplicate adjacent text.
 
     (a) a standalone plain line whose text reappears inside the (longer)
-    next non-empty line is dropped; (b) a leading fragment fused before a
-    footnote marker / sentence boundary whose text reappears later in the
-    same line (or the next one) is stripped off. Both require the
-    provably-duplicate match of _is_duplicate_fragment — nothing fuzzy.
+    next non-empty line is dropped — original gates, _is_duplicate_fragment,
+    plain non-list lines only; (b) a leading fragment fused before a
+    footnote marker / sentence boundary / printed roman-letter-dash marker
+    whose text reappears later in the same line (or the next one) is
+    stripped off — generalized gates, _is_duplicate_prefix, list-item
+    bodies included (their markdown marker is preserved). Nothing fuzzy.
     Returns (markdown, fragments_dropped).
     """
     lines = markdown.split("\n")
@@ -729,24 +856,31 @@ def drop_duplicate_orphans(markdown: str) -> tuple[str, int]:
             continue
         skip_next_blank = False
         stripped = line.strip()
-        if not _is_plain_line(stripped):
+        if not stripped or stripped.startswith(("#", "|", ">", "<")) \
+                or _HR_RE.match(stripped):
             out.append(line)
             continue
+        item_m = _ITEM_PREFIX_RE.match(stripped) \
+            if _LIST_ITEM_RE.match(stripped) else None
+        marker, body = (item_m.group(1), stripped[item_m.end():]) \
+            if item_m else ("", stripped)
         next_line = next(
             (l for l in lines[idx + 1:] if l.strip()), "")
-        # (a) whole-line orphan preceding the full line.
+        # (a) whole-line orphan preceding the full line (never list items).
         if (
-            len(_norm_ws(next_line)) > len(_norm_ws(stripped))
+            item_m is None
+            and len(_norm_ws(next_line)) > len(_norm_ws(stripped))
             and _is_duplicate_fragment(stripped, next_line)
         ):
             dropped += 1
             skip_next_blank = True
             continue
-        # (b) fragment fused onto the start of the line that duplicates it.
+        # (b) fragment fused onto the start of the body that duplicates it.
         cut = None
         candidates = sorted(
-            {m.start() for m in _FOOT_MARKER_RE.finditer(stripped)}
-            | {m.end() for m in _SENT_BOUND_RE.finditer(stripped)}
+            {m.start() for m in _FOOT_MARKER_RE.finditer(body)}
+            | {m.end() for m in _SENT_BOUND_RE.finditer(body)}
+            | {m.start() for m in _INLINE_MARK_RE.finditer(body)}
         )
         # Take the LAST passing split: the orphan may itself contain
         # sentence punctuation ("…la ley (art. 164 del Código Civil). 1
@@ -756,16 +890,440 @@ def drop_duplicate_orphans(markdown: str) -> tuple[str, int]:
         for pos in candidates:
             if pos == 0 or pos > ORPHAN_MAX_LEN + 50:
                 continue
-            frag = stripped[:pos].rstrip()
-            if _is_duplicate_fragment(frag, stripped[pos:], next_line):
+            frag = body[:pos].rstrip()
+            if _is_duplicate_prefix(frag, body[pos:], next_line):
                 cut = pos
         if cut is not None:
             lead = line[: len(line) - len(line.lstrip())]
-            out.append(lead + stripped[cut:])
+            out.append(lead + marker + body[cut:])
             dropped += 1
             continue
         out.append(line)
     return "\n".join(out), dropped
+
+
+# ------------------------------------------------------- list structure
+
+# Guard constants (module doc item 6 — tuned through four false-positive
+# rounds on the field document; do not loosen without re-auditing):
+LIST_MATCH_TOKENS = 4   # normalized-prefix tokens an md<->ref match needs
+LIST_BARE_NUM_GAP = 2   # class-D: bare number needs this marker->text gap
+LIST_CLUSTER_TOL = 3    # ref columns within this merge into one level
+LIST_LEVEL_MIN_SEP = 4  # clusters must be this far apart to be levels
+LIST_INDENT = 4         # markdown spaces per nesting level
+
+# Plain \w+ tokens (NFKC, casefolded): list matching needs identity, not
+# the number-aware shapes of the reversal scorer.
+_LS_TOKEN_RE = re.compile(r"\w+")
+# Printed marker shapes seen in `-layout` output. Bare numbers are matched
+# here but only CLASSIFIED as markers when the marker->text gap >=
+# LIST_BARE_NUM_GAP (the class-D guard): a sentence that merely starts
+# with a number ("15 de diciembre…") prints with a single space.
+_LS_REF_MARKER_RE = re.compile(
+    r"^(\s*)"
+    r"(•|·|—|-|\d{1,3}|[ivxlcdm]{1,7}[).]|[a-zA-Z][).])"
+    r"(\s+)(\S.*)$"
+)
+# Markdown item line (docling emits one line per block).
+_LS_ITEM_RE = re.compile(r"^(\s*)([-*+]|\d{1,3}\.)\s+(\S.*)$")
+# Candidate printed-marker token leading the item text on the md side.
+_LS_PRINTED_RE = re.compile(
+    r"^(\d{1,3}|[ivxlcdm]{1,7}[).]|[a-zA-Z] ?[).])\s+(\S)"
+)
+# Lines never treated as items/paragraphs (structure that is not list
+# content); <!-- comments are classified as neutral furniture separately.
+_LS_SKIP_RE = re.compile(r"^\s*(#{1,6}\s|\||>|<|```|~~~|!\[|---\s*$)")
+_LS_ROMAN_CHARS_RE = re.compile(r"[ivxlcdm]{2,7}")
+
+
+def _ls_toks(text: str) -> list[str]:
+    text = unicodedata.normalize("NFKC", text).casefold()
+    return _LS_TOKEN_RE.findall(text)
+
+
+def _ls_norm_marker(m: str) -> str:
+    return m.rstrip(".)").replace(" ", "").casefold()
+
+
+class _RefLine:
+    """One non-blank `pdftotext -layout` line: printed indent + marker."""
+
+    __slots__ = ("indent", "marker", "gap", "text_toks", "full_toks")
+
+    def __init__(self, raw: str):
+        # Tabs expand at the poppler default stop (8); stray BEL glyphs
+        # (symbol-font bullets, see sanitize) would shift every column.
+        exp = raw.expandtabs(8).replace("\x07", "")
+        self.indent = len(exp) - len(exp.lstrip())
+        m = _LS_REF_MARKER_RE.match(exp)
+        if m:
+            self.marker = m.group(2)
+            self.gap = len(m.group(3))
+            self.text_toks = _ls_toks(m.group(4))[: LIST_MATCH_TOKENS + 2]
+        else:
+            self.marker = None
+            self.gap = 0
+            self.text_toks = []
+        self.full_toks = _ls_toks(exp)[: LIST_MATCH_TOKENS + 2]
+
+    def marker_confirmed(self, tok: str) -> bool:
+        """Is `tok` (md-side candidate printed marker) the printed marker
+        of this line, per the class-D rules? Roman/letter+paren markers are
+        proof by being the line-leading token; a BARE NUMBER additionally
+        needs the marker column separated from the text column by >=
+        LIST_BARE_NUM_GAP spaces — otherwise it is just a sentence that
+        starts with a number."""
+        if self.marker is None:
+            return False
+        if _ls_norm_marker(self.marker) != _ls_norm_marker(tok):
+            return False
+        if tok.rstrip(".)").isdigit():
+            return self.gap >= LIST_BARE_NUM_GAP   # class-D column proof
+        return True
+
+def _ls_parse_ref(ref_text: str) -> list[_RefLine]:
+    return [_RefLine(l) for l in ref_text.split("\n") if l.strip()]
+
+
+def _ls_match_ref(md_toks: list[str], ref_lines: list[_RefLine],
+                  start: int) -> int | None:
+    """Find the ref line index >= start whose full-line or post-marker
+    tokens start with md_toks[:LIST_MATCH_TOKENS]. Monotonic forward
+    search with a one-time wrap to 0 (docling reading order occasionally
+    differs from print order). Fewer than 2 tokens is too little evidence
+    to match on at all."""
+    need = md_toks[:LIST_MATCH_TOKENS]
+    if len(need) < LIST_MATCH_TOKENS and len(need) < 2:
+        return None
+    n = len(ref_lines)
+    order = list(range(start, n)) + list(range(0, start))
+    for i in order:
+        rl = ref_lines[i]
+        if rl.full_toks[: len(need)] == need:
+            return i
+        if rl.marker is not None and rl.text_toks[: len(need)] == need:
+            return i
+    return None
+
+
+class _ListBlock:
+    """One markdown line, classified (docling emits one line per block)."""
+
+    __slots__ = ("line", "kind", "md_marker", "text", "ref", "ref_idx",
+                 "new_indent", "new_marker", "attach")
+
+    def __init__(self, line: str):
+        self.line = line
+        self.kind = "other"
+        self.md_marker = ""       # "-" / "N."
+        self.text = ""
+        self.ref: _RefLine | None = None
+        self.ref_idx: int | None = None
+        self.new_indent: int | None = None
+        self.new_marker: str | None = None
+        self.attach = False       # class A: indent under previous item
+        s = line.strip()
+        if not s or s.startswith("<!--"):
+            self.kind = "blank"   # comments/placeholders: neutral furniture
+            return
+        m = _LS_ITEM_RE.match(line)
+        if m and not _LS_SKIP_RE.match(line):
+            self.kind = "item"
+            self.md_marker = m.group(2)
+            self.text = m.group(3)
+        elif not _LS_SKIP_RE.match(line):
+            self.kind = "para"
+            self.text = s
+
+    def cur_level(self) -> int:
+        ind = len(self.line) - len(self.line.lstrip())
+        return ind // LIST_INDENT
+
+
+def _ls_body_col(ref_lines: list[_RefLine]) -> int:
+    """Smallest printed indent that >= 2 marker-less >= 5-token lines
+    share: the page's plain-paragraph column. The >= 2 requirement keeps
+    one-off furniture (running footers) from defining the column; the
+    < 60 cap drops far-right decoration. Falls back to 0."""
+    counts = Counter(
+        rl.indent for rl in ref_lines
+        if rl.marker is None and len(rl.full_toks) >= 5 and rl.indent < 60
+    )
+    cands = [ind for ind, n in counts.items() if n >= 2]
+    return min(cands) if cands else 0
+
+
+def _ls_family(marker: str) -> str:
+    """Marker family for chain/level assignment. Dash is DISTINCT from
+    bullet: the field document nests dash items under bullet items."""
+    m = _ls_norm_marker(marker)
+    if marker in "•·":
+        return "bullet"
+    if marker in "—-":
+        return "dash"
+    if m.isdigit():
+        return "number"
+    if _LS_ROMAN_CHARS_RE.fullmatch(m):
+        return "roman"
+    return "letter"   # single letters incl. ambiguous i/v/x/c
+
+
+def _ls_ordinal(marker: str, fam: str) -> int | None:
+    """Ordinal of a marker within its family (None: bullets/dashes have
+    no ordinal — one chain per family)."""
+    m = _ls_norm_marker(marker)
+    if fam == "number":
+        return int(m)
+    if fam == "letter":
+        return ord(m) - ord("a") + 1 if len(m) == 1 else None
+    if fam == "roman":
+        vals = {"i": 1, "v": 5, "x": 10, "l": 50, "c": 100,
+                "d": 500, "m": 1000}
+        tot = 0
+        for ch, nxt in zip(m, m[1:] + " "):
+            v = vals.get(ch, 0)
+            tot += -v if vals.get(nxt, 0) > v else v
+        return tot or None
+    return None
+
+
+def _ls_repair_page(md: str, ref_text: str,
+                    carry: dict | None = None) -> tuple[str, int, dict]:
+    """Repair one page. Returns (new_md, changes, carry_out).
+
+    carry: {"text_col": int, "md_indent": int} describing the trailing
+    list item of the PREVIOUS page (for page-initial class-A attachment
+    of a paragraph that continues an item across the page break), or None.
+    """
+    ref_lines = _ls_parse_ref(ref_text)
+    body_col = _ls_body_col(ref_lines)
+    blocks = [_ListBlock(l) for l in md.split("\n")]
+    changes = 0
+    cursor = 0
+
+    # -- pass 1: match items and paragraphs to reference lines -----------
+    for b in blocks:
+        if b.kind not in ("item", "para"):
+            continue
+        i = _ls_match_ref(_ls_toks(b.text), ref_lines, cursor)
+        if i is not None:
+            b.ref = ref_lines[i]
+            b.ref_idx = i
+            cursor = i + 1
+
+    # -- pass 2: class B — invented numeric marker over printed marker ---
+    for b in blocks:
+        if b.kind != "item" or b.ref is None:
+            continue
+        pm = _LS_PRINTED_RE.match(b.text)
+        if not pm:
+            continue
+        if not b.ref.marker_confirmed(pm.group(1)):
+            continue   # incl. the class-D bare-number gap guard
+        if re.fullmatch(r"\d{1,3}\.", b.md_marker):
+            # docling invented a positional number on top of the printed
+            # marker -> drop it, keep "- <printed>".
+            b.new_marker = "-"
+            changes += 1
+
+    # -- pass 3: runs, re-leveling (C) and orphan attachment (A) ---------
+    prev_item: _ListBlock | None = None
+    prev_carry = carry
+    run: list[_ListBlock] = []
+    runs: list[list[_ListBlock]] = []
+    for b in blocks:
+        if b.kind == "item":
+            run.append(b)
+            prev_item = b
+            prev_carry = None
+        elif b.kind == "blank":
+            continue
+        elif b.kind == "para" and b.ref is not None:
+            # Class A candidate: printed indent deep enough to prove the
+            # paragraph sits INSIDE the preceding item (anchor = the
+            # item's printed text column; page-initial paragraphs anchor
+            # on the carried previous-page item), AND clearly deeper than
+            # the page's own plain-paragraph column.
+            anchor_col = None
+            if prev_item is not None and prev_item.ref is not None:
+                anchor_col = (prev_item.ref.indent
+                              + len(prev_item.ref.marker or "")
+                              + prev_item.ref.gap)
+            elif prev_item is None and prev_carry:
+                anchor_col = prev_carry["text_col"]
+            deep_enough = (
+                anchor_col is not None
+                and b.ref.marker is None
+                and b.ref.indent >= anchor_col - 2
+                and b.ref.indent >= body_col + 4
+            )
+            # Deep-wrapped-lines check: the wrapped remainder of the
+            # printed paragraph must sit in the list zone too. Rejects
+            # margin-icon paragraphs, whose FIRST line alone is pushed
+            # right by the icon while the rest returns to the body column.
+            if deep_enough and b.ref_idx is not None:
+                j = b.ref_idx + 1
+                while j < len(ref_lines) and ref_lines[j].marker is None:
+                    if ref_lines[j].indent < (anchor_col or 0) - 2:
+                        deep_enough = False
+                        break
+                    j += 1
+                    if j - b.ref_idx > 8:
+                        break
+            if deep_enough:
+                b.attach = True
+                continue   # attached: does not break the run
+            if run:
+                runs.append(run)
+                run = []
+            prev_item = None
+        else:
+            if run:
+                runs.append(run)
+                run = []
+            prev_item = None
+            prev_carry = None
+    if run:
+        runs.append(run)
+
+    for r in runs:
+        # Marker-required run matching: leveling evidence must come from
+        # PRINTED MARKER columns. A marker-less matched ref line is a
+        # wrapped continuation (its indent is a text column, not a marker
+        # column) and yields false levels (two-column TOCs, page-initial
+        # item tails). Every item in the run must match a marker-bearing
+        # reference line — partially-evidenced runs are left alone.
+        matched = [b for b in r
+                   if b.ref is not None and b.ref.marker is not None]
+        if len(matched) != len(r) or len(r) < 2:
+            continue
+        # Same-family column merge: right-aligned/jittered markers of one
+        # printed list ("i)" at 18, "ii)" at 14) must not read as two
+        # levels; each marker family collapses to its chain median first.
+        fams = {id(b): _ls_family(b.ref.marker) for b in r}
+        # Ambiguous single letters that are also roman chars ("i)", "v)",
+        # "c)", "x)"): alphabet adjacency wins (a "c)" preceded by a "b)"
+        # letter item is a letter); otherwise the presence of unambiguous
+        # multi-char roman markers ("ii)", "iii)") makes it roman.
+        letter_seen: set[str] = set()
+        has_multiroman = any(f == "roman" for f in fams.values())
+        for b in r:
+            m = _ls_norm_marker(b.ref.marker)
+            if fams[id(b)] == "letter":
+                if re.fullmatch(r"[ivxlcdm]", m) and has_multiroman \
+                        and chr(ord(m) - 1) not in letter_seen:
+                    fams[id(b)] = "roman"
+                else:
+                    letter_seen.add(m)
+        # Ordinal-chain column merging: consecutive-ordinal same-family
+        # items ("i)","ii)" / "5","6","7" / "a)","b)") are one printed
+        # list — their jittered marker columns collapse to the chain
+        # median. An ordinal BREAK ("…7" then "2": outer list resumes)
+        # starts a new chain, keeping genuinely re-used families at
+        # different levels separable.
+        chain_of: dict[int, tuple] = {}
+        last: dict[str, tuple[int | None, int]] = {}   # fam -> (ord, chain)
+        counter = 0
+        for b in r:
+            fam = fams[id(b)]
+            o = _ls_ordinal(b.ref.marker, fam)
+            prev = last.get(fam)
+            if prev is not None and (o is None or prev[0] is None
+                                     or o == prev[0] + 1):
+                chain = prev[1]
+            else:
+                counter += 1
+                chain = counter
+            chain_of[id(b)] = (fam, chain)
+            last[fam] = (o, chain)
+        chain_cols: dict[tuple, list[int]] = {}
+        for b in r:
+            chain_cols.setdefault(chain_of[id(b)], []).append(b.ref.indent)
+        chain_col = {c: sorted(cs)[len(cs) // 2]
+                     for c, cs in chain_cols.items()}
+        eff_col = {id(b): chain_col[chain_of[id(b)]] for b in r}
+        cols = sorted(set(eff_col.values()))
+        clusters: list[list[int]] = []
+        for c in cols:
+            if clusters and c - clusters[-1][-1] <= LIST_CLUSTER_TOL:
+                clusters[-1].append(c)
+            else:
+                clusters.append([c])
+        if len(clusters) < 2:
+            continue   # one printed column: nothing to re-level
+        centers = [sum(cl) / len(cl) for cl in clusters]
+        if any(hi - lo < LIST_LEVEL_MIN_SEP
+               for lo, hi in zip(centers, centers[1:])):
+            continue   # columns too close to be distinct levels
+        col_level = {c: li for li, cl in enumerate(clusters) for c in cl}
+        for b in r:
+            lvl = col_level[eff_col[id(b)]]
+            if lvl != b.cur_level():
+                b.new_indent = lvl * LIST_INDENT
+                changes += 1
+
+    # -- pass 4: emit ----------------------------------------------------
+    out: list[str] = []
+    last_item_indent = (carry or {}).get("md_indent", 0)
+    carry_out: dict = {}
+    for b in blocks:
+        if b.kind == "item":
+            ind = b.new_indent if b.new_indent is not None \
+                else len(b.line) - len(b.line.lstrip())
+            marker = b.new_marker or b.md_marker
+            if b.new_indent is None and b.new_marker is None:
+                out.append(b.line)
+            else:
+                out.append(" " * ind + marker + " " + b.text)
+            last_item_indent = ind
+            if b.ref is not None:
+                carry_out = {
+                    "text_col": (b.ref.indent + len(b.ref.marker or "")
+                                 + b.ref.gap),
+                    "md_indent": ind,
+                }
+        elif b.kind == "para" and b.attach:
+            new = " " * (last_item_indent + LIST_INDENT) + b.text
+            if new != b.line:
+                changes += 1
+            out.append(new)
+        else:
+            out.append(b.line)
+            # carry_out deliberately survives trailing paragraphs
+            # (footnote zones sit below the list in print order); the
+            # next page's indent gate is the real guard against false
+            # attachment.
+    return "\n".join(out), changes, carry_out
+
+
+def fix_list_structure(
+    pages: dict[int, str], reference: dict[int, str]
+) -> tuple[dict[int, str], dict[int, int]]:
+    """Repair list structure (classes A/B/C) against the poppler reference.
+
+    pages / reference: 1-indexed page -> markdown / poppler -layout text
+    (contract). Pages without a usable reference, or without any markdown
+    list item at all, are returned untouched (and reset the cross-page
+    carry — an attachment must never jump a skipped page). Returns
+    (pages, {page: changes}); counts hold only pages with >= 1 change,
+    and untouched pages keep their original string identity.
+    """
+    out: dict[int, str] = {}
+    counts: dict[int, int] = {}
+    carry: dict = {}
+    for p in sorted(pages):
+        ref = reference.get(p, "")
+        has_item = ("- " in pages[p]
+                    or re.search(r"^\d{1,3}\. ", pages[p], re.M))
+        if not ref.strip() or not has_item:
+            out[p] = pages[p]
+            carry = {}
+            continue
+        new, n, carry = _ls_repair_page(pages[p], ref, carry or None)
+        out[p] = new if n else pages[p]   # same object: provably untouched
+        if n:
+            counts[p] = n
+    return out, counts
 
 
 # ---------------------------------------------------------------- self-test
@@ -975,6 +1533,143 @@ _ORPHAN_LEGIT_QUOTE = (
     "siguiente: «Los demás que establezca el Banco de España»."
 )
 
+# Verbatim page 86 of the field document (docling markdown): a class-B
+# invented marker ("2. ii) Para exigir…" on top of the printed "ii)")
+# and a class-C run (bullet items printed one level under the bare-
+# number "3" marker column, flattened to a single level by docling).
+_LIST_MD_86 = """\
+<!-- image -->
+
+distintos en función del canal empleado y, como tales, deberán especificarse en la cláusula que los contemple.
+
+- El canal empleado para efectuar las comunicaciones, que deberá ser el adecuado, de forma que guarde proporcionalidad con el saldo reclamado. Podrán establecerse umbrales  de  deuda  mínimos  exentos  de  su  aplicación,  de  los  que  deberá  ser informado el cliente.
+- La incompatibilidad de este gasto con otras penalizaciones, en la medida en que se enmarca en la reconducción del pago de la deuda, por lo que no se podrán establecer otras penalizaciones en el contrato por el mismo concepto.
+- 3 Finalmente, de producirse el efectivo devengo de los citados gastos:
+- Se deberá informar de estos con carácter previo a su cargo, preferiblemente en la propia comunicación, en la que se indicarán el saldo deudor impagado, el importe que se va a adeudar conforme a lo pactado y el plazo disponible para regularizar la situación.
+- No cabrá el cobro de más de una comunicación para un mismo saldo impagado, ni siquiera cuando este se prolongue en sucesivas liquidaciones.
+- Las  comunicaciones  deberán  ser  respetuosas  con  la  privacidad  del  cliente, proporcionales a los deberes de información y no resultar excesivas.
+
+Además de lo anterior, y a la vista del resultado de las actuaciones supervisoras llevadas a cabo por el Banco de España, se considera necesario añadir algunas precisiones destinadas a una mejor definición de estos criterios de buenas prácticas y motivadas por el hecho de que la generación  de  estos  gastos  suele  guardar  relación  con  situaciones  de  descubierto  o  de «números rojos» en cuenta corriente.
+
+Así, para que la actuación de una entidad financiera se considere ajustada a las buenas prácticas bancarias, cuando se pueda producir o se produzca efectivamente un descubierto tácito en cuenta:
+
+- i) Se deberá dar la posibilidad a los clientes de desautorizar a la entidad el cargo de recibos en descubierto, lo que puede tener lugar tanto en la contratación de la cuenta como  posteriormente,  con  ocasión  del  envío  al  cliente  de  cualquiera  de  las comunicaciones periódicas que prevé la normativa.
+2. ii) Para exigir el reembolso del saldo deudor deberá realizarse la liquidación previa del descubierto  tácito,  siendo  este,  por  tanto,  el  momento  a  partir  del  cual  podrán repercutirse los correspondientes GRPD, siempre y cuando: a) se mantenga el saldo deudor  pendiente  de  regularizar,  y  b)  se  hayan  realizado  las  comunicaciones oportunas, en los términos exigidos por las buenas prácticas señaladas.
+"""
+
+# Matching verbatim `pdftotext -layout` page 86.
+_LIST_REF_86 = """\
+                                                                                                              CAPÍTULO 2
+
+
+
+
+                          distintos en función del canal empleado y, como tales, deberán especificarse en la
+                          cláusula que los contemple.
+
+                        • El canal empleado para efectuar las comunicaciones, que deberá ser el adecuado,
+                          de forma que guarde proporcionalidad con el saldo reclamado. Podrán establecerse
+                          umbrales de deuda mínimos exentos de su aplicación, de los que deberá ser
+                          informado el cliente.
+
+                        • La incompatibilidad de este gasto con otras penalizaciones, en la medida en que se
+                          enmarca en la reconducción del pago de la deuda, por lo que no se podrán establecer
+                          otras penalizaciones en el contrato por el mismo concepto.
+
+              3         Finalmente, de producirse el efectivo devengo de los citados gastos:
+
+                        • Se deberá informar de estos con carácter previo a su cargo, preferiblemente en la
+                          propia comunicación, en la que se indicarán el saldo deudor impagado, el importe
+                          que se va a adeudar conforme a lo pactado y el plazo disponible para regularizar la
+                          situación.
+
+                        • No cabrá el cobro de más de una comunicación para un mismo saldo impagado, ni
+                          siquiera cuando este se prolongue en sucesivas liquidaciones.
+
+                        • Las comunicaciones deberán ser respetuosas con la privacidad del cliente,
+                          proporcionales a los deberes de información y no resultar excesivas.
+
+        Además de lo anterior, y a la vista del resultado de las actuaciones supervisoras llevadas a cabo
+        por el Banco de España, se considera necesario añadir algunas precisiones destinadas a una
+        mejor definición de estos criterios de buenas prácticas y motivadas por el hecho de que la
+        generación de estos gastos suele guardar relación con situaciones de descubierto o de
+        «números rojos» en cuenta corriente.
+
+        Así, para que la actuación de una entidad financiera se considere ajustada a las buenas prácticas
+        bancarias, cuando se pueda producir o se produzca efectivamente un descubierto tácito en
+        cuenta:
+
+                  i)    Se deberá dar la posibilidad a los clientes de desautorizar a la entidad el cargo de
+                        recibos en descubierto, lo que puede tener lugar tanto en la contratación de la cuenta
+                        como posteriormente, con ocasión del envío al cliente de cualquiera de las
+                        comunicaciones periódicas que prevé la normativa.
+
+                  ii)   Para exigir el reembolso del saldo deudor deberá realizarse la liquidación previa del
+                        descubierto tácito, siendo este, por tanto, el momento a partir del cual podrán
+                        repercutirse los correspondientes GRPD, siempre y cuando: a) se mantenga el saldo
+                        deudor pendiente de regularizar, y b) se hayan realizado las comunicaciones
+                        oportunas, en los términos exigidos por las buenas prácticas señaladas.
+
+
+Banco de España         Compendio de criterios de buenas prácticas bancarias. 2.ª actualización, abril 2026           86
+"""
+
+# Page 87 head (trimmed before the footnote zone, which the orphan
+# fixtures cover): three class-A continuation paragraphs flattened out
+# of their items, incl. the page-initial one whose anchor is the
+# cross-page carry from page 86's trailing item.
+_LIST_MD_87 = """\
+<!-- image -->
+
+En el caso de girarse estos GRPD de forma previa a la liquidación del descubierto, se entenderá  que  dichos  gastos  forman  parte  de  los  conceptos  repercutidos  por  la propia prestación del servicio de descubierto y, por tanto, del coste del crédito, a efectos de lo establecido en la norma 13.ª, apartado 7.e), de la Circular 5/2012 6 .
+
+- iii) En el momento de la apertura del descubierto, y con independencia de las previsiones del artículo\xa020.3 de la Ley 16/2011 7 ,  deberá informarse al cliente, de forma clara y concisa, del período de que dispone para regularizar el saldo deudor antes de su liquidación y, en su caso, de la posible repercusión de los GRPD en el supuesto de que no sea satisfecho dicho saldo deudor.
+
+Por otra parte, se estima conveniente advertir a la clientela de las consecuencias del eventual adeudo en descubierto de comisiones o gastos por la prestación de servicios singulares solicitados por su parte.
+
+- iv) Una vez que se realice la liquidación del descubierto, el cliente debe disponer de un plazo mínimo para satisfacer el saldo deudor antes de que se proceda, en su caso, a la  realización de gestiones para su reclamación y antes del eventual cargo de los GRPD.
+
+Los  saldos  en  descubierto  liquidados  y  reclamados  que  no  sean  satisfechos  no podrán  ser  objeto  de  una  nueva  liquidación  por  la  concesión  de  un  servicio  de descubierto que ya fue prestado, no pudiendo girarse, por tanto, nuevas comisiones por descubierto ni GRPD adicionales por estos mismos saldos.
+"""
+
+# Matching `pdftotext -layout` page 87 head (the \t\t indent runs are
+# verbatim poppler output; _RefLine expands them at tab stop 8).
+_LIST_REF_87 = """\
+                                                                                                                                CAPÍTULO 2
+
+
+
+
+                  \t\t En el caso de girarse estos GRPD de forma previa a la liquidación del descubierto, se
+                         entenderá que dichos gastos forman parte de los conceptos repercutidos por la
+                         propia prestación del servicio de descubierto y, por tanto, del coste del crédito, a
+                         efectos de lo establecido en la norma 13.ª, apartado 7.e), de la Circular 5/20126.
+
+
+                  iii) En el momento de la apertura del descubierto, y con independencia de las previsiones
+                         del artículo 20.3 de la Ley 16/20117, deberá informarse al cliente, de forma clara y
+                         concisa, del período de que dispone para regularizar el saldo deudor antes de su
+                         liquidación y, en su caso, de la posible repercusión de los GRPD en el supuesto de que
+                         no sea satisfecho dicho saldo deudor.
+
+
+                  \t\t Por otra parte, se estima conveniente advertir a la clientela de las consecuencias del
+                         eventual adeudo en descubierto de comisiones o gastos por la prestación de servicios
+                         singulares solicitados por su parte.
+
+
+                  iv) Una vez que se realice la liquidación del descubierto, el cliente debe disponer de un
+                         plazo mínimo para satisfacer el saldo deudor antes de que se proceda, en su caso, a
+                         la realización de gestiones para su reclamación y antes del eventual cargo de los
+                         GRPD.
+
+
+                  \t\t Los saldos en descubierto liquidados y reclamados que no sean satisfechos no
+                         podrán ser objeto de una nueva liquidación por la concesión de un servicio de
+                         descubierto que ya fue prestado, no pudiendo girarse, por tanto, nuevas comisiones
+                         por descubierto ni GRPD adicionales por estos mismos saldos.
+"""
+
 if __name__ == "__main__":
     failures = 0
 
@@ -1182,11 +1877,145 @@ if __name__ == "__main__":
         "- 19 En este sentido, se considera contrario a las buenas "
         "prácticas que la entidad realice manifestaciones genéricas.")
     fixed, n = drop_duplicate_orphans(legit_footnote)
-    check("list-item footnote never a candidate", n == 0
-          and fixed == legit_footnote, f"dropped={n}")
+    check("list-item footnote unchanged (marker at column 0 is no boundary)",
+          n == 0 and fixed == legit_footnote, f"dropped={n}")
     again, n2 = drop_duplicate_orphans(
         drop_duplicate_orphans(_ORPHAN_P85_B)[0])
     check("idempotent", n2 == 0, f"second pass={n2}")
+
+    # ---------------- drop_duplicate_orphans (generalized branch (b)) ----
+    # Verbatim OCR'd-footnote lines from field pages 87/330 — the fused
+    # orphans the original gates missed (short glued fragments, printed
+    # roman/letter/dash markers, re-wrapped multi-chunk orphans).
+    print("drop_duplicate_orphans (generalized fused-prefix rules)")
+    fixed, n = drop_duplicate_orphans(
+        "ratorio de: Como excepción a lo anterior, cuando las comisiones "
+        "giren sobre el mayor descubierto, la tasa anual equivalente se "
+        "obtendrá como sumatorio de:")
+    check("glued fragment of 11 chars stripped (floor 10)", n == 1
+          and fixed.startswith("Como excepción"), repr(fixed[:40]))
+    fixed, n = drop_duplicate_orphans(
+        "al  equivalente eses se calculará teniendo en cuenta el saldo "
+        "medio deudor del  período de liquidación; - la tasa anual "
+        "equivalente de los intereses se calculará teniendo en cuenta el "
+        "saldo medio deudor del período de liquidación;")
+    check("multi-chunk orphan before mid-line dash stripped", n == 1
+          and fixed.startswith("- la tasa anual equivalente"),
+          repr(fixed[:44]))
+    fixed, n = drop_duplicate_orphans(
+        "al  equivalente ses devengados por el  descubierto durante el  "
+        "período de liquidación de este, y i) la tasa anual equivalente "
+        "de los intereses devengados por el descubierto durante el "
+        "período de liquidación de este, y")
+    check("multi-chunk orphan before roman 'i)' marker stripped", n == 1
+          and fixed.startswith("i) la tasa anual equivalente"),
+          repr(fixed[:40]))
+    fixed, n = drop_duplicate_orphans(
+        "- cubierto tácito. a) Del descubierto tácito.")
+    check("list-item fused orphan stripped, md marker kept", n == 1
+          and fixed == "- a) Del descubierto tácito.", repr(fixed))
+    fixed, n = drop_duplicate_orphans(
+        "- tipo deudor. c) Del tipo deudor.")
+    check("lowercase 12-char containment inside a list item", n == 1
+          and fixed == "- c) Del tipo deudor.", repr(fixed))
+
+    print("drop_duplicate_orphans (generalized keep-negatives)")
+    sts = "21 Véase la STS de 30 de abril de 1960."
+    fixed, n = drop_duplicate_orphans(sts)
+    check("'STS de 30 de abril' kept (bare number + lowercase is no "
+          "boundary)", n == 0 and fixed == sts, f"dropped={n}")
+    numstart = (
+        "15 de diciembre de 1998 y 10 mayo de 1999 son las fechas de las "
+        "sentencias de la Audiencia Provincial citadas en el texto.")
+    fixed, n = drop_duplicate_orphans(numstart)
+    check("sentence starting with a number kept", n == 0
+          and fixed == numstart, f"dropped={n}")
+    short_frag = (
+        "de este. ii) la tasa anual equivalente de las comisiones que, a "
+        "causa de la concesión del descubierto, se adeuden durante el "
+        "período de liquidación de este.")
+    fixed, n = drop_duplicate_orphans(short_frag)
+    check("8-char fragment kept (below glued floor 10 — residue is "
+          "verify.orphan_residue_suspect's job)", n == 0
+          and fixed == short_frag, f"dropped={n}")
+    fixed, n = drop_duplicate_orphans(_ORPHAN_LEGIT_QUOTE)
+    check("legit quoted repetition still kept under generalized gates",
+          n == 0 and fixed == _ORPHAN_LEGIT_QUOTE, f"dropped={n}")
+
+    # ------------------------------------------------- fix_list_structure
+    print("fix_list_structure (field pages 86-87: classes A, B, C)")
+    lf_pages = {86: _LIST_MD_86, 87: _LIST_MD_87}
+    lf_refs = {86: _LIST_REF_86, 87: _LIST_REF_87}
+    lf_fixed, lf_counts = fix_list_structure(lf_pages, lf_refs)
+    check("change counts match the field run", lf_counts == {86: 6, 87: 3},
+          f"counts={lf_counts}")
+    out86, out87 = lf_fixed[86], lf_fixed[87]
+    check("class B: invented '2.' dropped, printed 'ii)' kept",
+          "- ii) Para exigir el reembolso" in out86
+          and "2. ii)" not in out86)
+    check("class C: bullets re-nested under the printed '3' marker",
+          "\n    - El canal empleado" in out86
+          and "\n    - Las  comunicaciones" in out86
+          and "\n- 3 Finalmente" in out86)
+    check("class A: page-initial paragraph attached via cross-page carry",
+          out87.startswith("<!-- image -->\n\n    En el caso de girarse"))
+    check("class A: in-page continuation paragraphs attached",
+          "\n    Por otra parte, se estima" in out87
+          and "\n    Los  saldos  en  descubierto" in out87)
+    check("items with printed roman markers keep their level",
+          "\n- iii) En el momento" in out87 and "\n- iv) Una vez" in out87)
+    again, again_counts = fix_list_structure(dict(lf_fixed), lf_refs)
+    check("idempotent", again_counts == {}
+          and again[86] is lf_fixed[86] and again[87] is lf_fixed[87],
+          f"second pass={again_counts}")
+
+    print("fix_list_structure (class-D guard and negatives)")
+    # Bare number leading a sentence: printed with a single space, so it is
+    # NOT a marker — the invented "1." must survive (class-D keep case).
+    md_d = ("1. 15 de diciembre de 2015, fecha de la sentencia del "
+            "Tribunal Supremo que se cita.")
+    ref_d = ("     15 de diciembre de 2015, fecha de la sentencia del "
+             "Tribunal Supremo que se cita.")
+    lf_fixed, lf_counts = fix_list_structure({1: md_d}, {1: ref_d})
+    check("bare number + 1-space gap: no marker, item untouched",
+          lf_counts == {} and lf_fixed[1] is md_d, f"counts={lf_counts}")
+    # Same number printed as a real marker (gap >= 2): class B fires.
+    ref_d2 = ("     15   Véase la STS de 16 de diciembre de 2014 y sus "
+              "concordantes posteriores.")
+    md_d2 = ("3. 15 Véase la STS de 16 de diciembre de 2014 y sus "
+             "concordantes posteriores.")
+    lf_fixed, lf_counts = fix_list_structure({1: md_d2}, {1: ref_d2})
+    check("bare number + 2-space gap: marker confirmed, class B fires",
+          lf_counts == {1: 1} and lf_fixed[1].startswith("- 15 Véase"),
+          f"counts={lf_counts} out={lf_fixed[1][:24]!r}")
+    # Healthy list at one printed column with faithful reference: no
+    # changes, same object.
+    md_ok = (
+        "- 1 Resulta imprescindible su previsión y concreción en la "
+        "información precontractual.\n"
+        "- 2 Además, en dicha información se deberá recoger lo "
+        "siguiente:\n\n"
+        "Texto normal del cuerpo en su columna habitual que continúa\n"
+        "en una segunda línea impresa en la misma columna del cuerpo.\n")
+    ref_ok = (
+        "  1   Resulta imprescindible su previsión y concreción en la\n"
+        "      información precontractual.\n"
+        "  2   Además, en dicha información se deberá recoger lo "
+        "siguiente:\n\n"
+        "Texto normal del cuerpo en su columna habitual que continúa\n"
+        "en una segunda línea impresa en la misma columna del cuerpo.\n")
+    lf_fixed, lf_counts = fix_list_structure({1: md_ok}, {1: ref_ok})
+    check("healthy single-column list untouched (same object)",
+          lf_counts == {} and lf_fixed[1] is md_ok, f"counts={lf_counts}")
+    # Table page (no markdown list items): the page gate skips it whole.
+    lf_fixed, lf_counts = fix_list_structure({103: _MD_103}, {103: _REF_103})
+    check("table page without list items skipped (same object)",
+          lf_counts == {} and lf_fixed[103] is _MD_103,
+          f"counts={lf_counts}")
+    # Empty/missing reference: untouched.
+    lf_fixed, lf_counts = fix_list_structure({86: _LIST_MD_86}, {86: ""})
+    check("empty reference -> untouched", lf_counts == {}
+          and lf_fixed[86] is _LIST_MD_86, f"counts={lf_counts}")
 
     if failures:
         print(f"\n{failures} self-test check(s) FAILED")

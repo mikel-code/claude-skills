@@ -124,9 +124,22 @@ def _exit_code_error(code: int, mode: OcrMode, pdf_path: str, languages: str,
     return RuntimeError(msg + tail)
 
 
-def run_ocr(pdf_path: str, mode: OcrMode, out_dir: str, languages: str = "eng") -> str:
+def run_ocr(pdf_path: str, mode: OcrMode, out_dir: str,
+            languages: str = "eng",
+            pages: list[int] | None = None) -> str:
     """Run ocrmypdf on `pdf_path` with the given mode; return the path of
     the produced text-layer PDF.
+
+    `pages` (1-indexed) scopes OCR to exactly those pages via ocrmypdf's
+    --pages. This is load-bearing for correctness, not an optimization:
+    field-confirmed on a 423-page document, an unscoped --redo-ocr pass
+    REWRITES born-digital pages, and tesseract's overlay text coexisting
+    with the real text layer manufactures duplicated/truncated/
+    glyph-corrupted fragments throughout (the fused-orphan disease
+    repair.drop_duplicate_orphans exists to mop up). Scoped to only the
+    pages that need OCR, the corruption never happens. None = whole
+    document (fixture-sized inputs and the FORCE mode, which is
+    document-wide by definition).
 
     Every nonzero ocrmypdf exit either raises RuntimeError (cause + fix) or,
     for the one documented non-error case — --skip-text on a document where
@@ -151,8 +164,10 @@ def run_ocr(pdf_path: str, mode: OcrMode, out_dir: str, languages: str = "eng") 
         "-l", languages,
         "--output-type", "pdf",
         "-q",
-        str(src), str(output_path),
     ]
+    if pages:
+        cmd += ["--pages", ",".join(str(p) for p in sorted(set(pages)))]
+    cmd += [str(src), str(output_path)]
     proc = subprocess.run(cmd, capture_output=True, text=True)
 
     if proc.returncode == _EXIT_OK:
