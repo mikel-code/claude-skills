@@ -195,11 +195,7 @@ if __name__ == "__main__":
     # (a) JS-injection: static body is an empty div + noscript warning;
     # visible content only exists after a <script> tag sets innerHTML. Only
     # a real rendering engine (not a static fetch) can surface the sentinel.
-    scratch_dir = pathlib.Path(
-        "/private/tmp/claude-501/-Users-mikel-code-claude-skills/"
-        "7f58af9e-0a37-43b4-bc24-18878862d24a/scratchpad/chrome"
-    )
-    scratch_dir.mkdir(parents=True, exist_ok=True)
+    scratch_dir = pathlib.Path(tempfile.mkdtemp(prefix="chrome-selftest-"))
     sentinel = "SENTINEL_TEXT_RENDERED_BY_JS_1234"
     js_fixture = scratch_dir / "js_injection_fixture.html"
     js_fixture.write_text(

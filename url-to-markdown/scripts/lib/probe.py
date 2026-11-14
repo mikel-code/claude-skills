@@ -360,11 +360,7 @@ if __name__ == "__main__":
     import sys
     import zipfile
 
-    SCRATCH_DIR = Path(
-        "/private/tmp/claude-501/-Users-mikel-code-claude-skills/"
-        "7f58af9e-0a37-43b4-bc24-18878862d24a/scratchpad/probe-okf"
-    )
-    SCRATCH_DIR.mkdir(parents=True, exist_ok=True)
+    SCRATCH_DIR = Path(tempfile.mkdtemp(prefix="probe-selftest-"))
     DOWNLOAD_DIR = SCRATCH_DIR / "downloads"
 
     failures: list[str] = []
@@ -377,8 +373,10 @@ if __name__ == "__main__":
 
     # (a) file:// PDF fixture -> PDF kind
     print("(a) file:// PDF fixture")
-    pdf_fixture = Path(
-        "/Users/mikel/code/claude-skills/pdf-to-markdown/tests/fixtures/probe-simple.pdf"
+    # Sibling skill's fixture: <repo>/pdf-to-markdown/tests/fixtures/
+    pdf_fixture = (
+        Path(__file__).resolve().parents[3]
+        / "pdf-to-markdown" / "tests" / "fixtures" / "probe-simple.pdf"
     )
     result_a = probe(pdf_fixture.as_uri(), str(DOWNLOAD_DIR))
     check("kind == PDF", result_a.kind == ProbeKind.PDF, str(result_a.kind))
